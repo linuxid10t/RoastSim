@@ -169,6 +169,31 @@ TEST(darker_drop_means_darker_roast) {
     CHECK(dark.moisture_pct < light.moisture_pct);
 }
 
+TEST(denser_bean_takes_longer_with_bigger_core_lag) {
+    // Same coffee, only density changed: dense beans must not heat faster.
+    Catalog cat;
+    cat.loadDir(rstest::dataDir());
+    std::string err;
+    const char* base = R"({"id":"%s","name":"x","moisture_pct":11,"bean_mass_mg":155,"fc_temp":196,"density":%d})";
+    char buf[256];
+    std::snprintf(buf, sizeof buf, base, "soft", 650);
+    CHECK(cat.addBeanJson(buf, &err));
+    std::snprintf(buf, sizeof buf, base, "hard", 760);
+    CHECK(cat.addBeanJson(buf, &err));
+    auto roast = [&](const char* bean) {
+        std::string s = std::string(R"({"roaster":"popper_modded","seed":4,"max_s":1500,"bean":")") + bean +
+                        R"(","actions":[{"at":0,"set":{"heat":100,"fan":85}},{"at":20,"charge":true},
+                        {"event":"FCs","delay":60,"drop":true}]})";
+        ScenarioResult r;
+        runScenario(script(s.c_str()), cat, r);
+        return r.report;
+    };
+    RoastReport soft = roast("soft"), hard = roast("hard");
+    CHECK(hard.fcs_s > soft.fcs_s + 5);
+    CHECK(hard.fcs_bt > soft.fcs_bt);
+    CHECK(hard.agtron_ground - hard.agtron_whole > soft.agtron_ground - soft.agtron_whole);
+}
+
 TEST(probe_open_fault_reads_minus_one) {
     ScenarioResult r = run(R"({"roaster":"popper_modded","seed":1,"max_s":60,
         "actions":[{"at":0,"set":{"heat":50,"fan":80}},{"at":10,"fault":{"probe":"BT","type":"open"}}]})");

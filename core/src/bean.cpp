@@ -27,7 +27,7 @@ Kinetics Kinetics::fromJson(const json::Value& v, const Kinetics& base) {
     if (!v.isObject()) return k;
 #define RS_K(name) k.name = v.get(#name, k.name)
     RS_K(dry_A); RS_K(dry_B); RS_K(X_eq); RS_K(latent_J_kg); RS_K(cp_dry_a); RS_K(cp_dry_b);
-    RS_K(k_bean); RS_K(surface_frac); RS_K(shape_area); RS_K(exo_H); RS_K(exo_k0); RS_K(exo_EaR);
+    RS_K(k_bean); RS_K(density_ref); RS_K(density_dry_exp); RS_K(density_cond_exp); RS_K(surface_frac); RS_K(shape_area); RS_K(exo_H); RS_K(exo_k0); RS_K(exo_EaR);
     RS_K(dev_EaR); RS_K(dev_Tref); RS_K(brown_EaR); RS_K(brown_Tref); RS_K(brown_full);
     RS_K(agtron_min); RS_K(agtron_span); RS_K(agtron_tau); RS_K(organic_loss_max);
     RS_K(organic_loss_tau); RS_K(crack_sigma); RS_K(crack_energy_J); RS_K(fc_pops_per_bean);
@@ -57,7 +57,7 @@ BeanSpec BeanSpec::fromJson(const json::Value& v) {
     s.sc_sd = v.get("sc_sd", s.sc_sd);
     s.chaff_frac = v.get("chaff_frac", s.chaff_frac);
     s.kinetics_scale = v.get("kinetics_scale", s.kinetics_scale);
-    s.bulk_density = v.get("bulk_density", s.bulk_density);
+    s.bulk_density = v.get("bulk_density", s.density);  // free-settled density is the pile density
     readColor(v["green_rgb"], s.green_rgb);
     s.kinetics = Kinetics::fromJson(v["kinetics"], Kinetics{});
     return s;
@@ -115,7 +115,7 @@ void BeanBatch::init(const BeanSpec& spec, double batch_kg, int n_parcels, doubl
         double chaffBean = m_bean * spec.chaff_frac;
         p.chaff0 = p.chaff = chaffBean;
         p.m_dry0 = p.m_dry = (m_bean - chaffBean) * (1.0 - mwb);
-        double vol = m_bean / spec.density;
+        double vol = m_bean / k_.density_ref;  // size from mass only (see Kinetics::density_ref)
         p.d0 = p.d = std::cbrt(6.0 * vol / kPi);
         p.fc_thr = spec.fc_temp + spec.fc_sd * rng.normal();
         p.sc_thr = spec.sc_temp + spec.sc_sd * rng.normal();
@@ -150,6 +150,9 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
     const Kinetics& k = k_;
     const double phiS = k.surface_frac, phiC = 1.0 - k.surface_frac;
     const double kin = spec_.kinetics_scale;
+    const double rhoRel = spec_.density > 0 ? k.density_ref / spec_.density : 1.0;
+    const double dryF = std::pow(rhoRel, k.density_dry_exp);
+    const double condF = std::pow(rhoRel, k.density_cond_exp);
 
     for (auto& p : parcels_) {
         if (p.count <= 0) continue;
@@ -159,7 +162,7 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
         // --- drying
         double Xex = std::max(0.0, p.X - k.X_eq);
         double dmm = p.d0 * 1000.0;
-        double dXdt = -k.dry_A * Xex * Xex / (dmm * dmm) * std::exp(-k.dry_B / TmK);
+        double dXdt = -k.dry_A * Xex * Xex / (dmm * dmm) * std::exp(-k.dry_B / TmK) * dryF;
         double dX = std::max(dXdt * dt, -Xex);
         double evapKg = -dX * p.m_dry;               // per bean
         double Qevap = k.latent_J_kg * evapKg / dt;  // W per bean
@@ -189,7 +192,7 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
         double cpC = k.cp_dry_a + k.cp_dry_b * p.T_c;
         double Cs = phiS * p.m_dry * (cpS + p.X * kWaterCp);
         double Cc = phiC * p.m_dry * (cpC + p.X * kWaterCp);
-        double G = 7.0 * k.k_bean * p.d;  // W/K surface<->core
+        double G = 7.0 * k.k_bean * p.d * condF;  // W/K surface<->core
         double Qint = G * (p.T_s - p.T_c);
         double Qsink = Qevap + Qcrack - Qexo;
         double dTs = (p.q_in - Qint - phiS * Qsink) / Cs * dt;

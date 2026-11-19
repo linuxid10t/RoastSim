@@ -56,7 +56,9 @@ int main(int argc, char** argv) {
     }
     for (auto& e : cat.errors()) std::fprintf(stderr, "warning: %s\n", e.c_str());
 
-    std::printf("  time   BT     ET    RoR   bean   moist  agtron  heat  fan  state\n");
+    // bean = true mean bean temperature (no probe lag); inlet = air entering the chamber;
+    // wall = drum shell / pan / chamber wall; power = heat source output in W.
+    std::printf("  time   BT     ET    RoR   bean   moist  agtron  heat  fan  inlet   wall  power  state\n");
     int counter = 0;
     ScenarioResult res;
     bool ok = runScenario(script, cat, res, [&](const Simulation& sim) {

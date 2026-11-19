@@ -1,0 +1,10 @@
+{
+  "roaster": "drum_sample_1kg_gas", "bean": "colombia_washed", "batch_g": 800, "seed": 4, "max_s": 2400,
+  "preheat_C": 200,
+  "actions": [
+    { "at": 0, "set": { "fan": 40 } },
+    { "at": 0, "set": { "heat": 70 } },
+    { "at": 1, "charge": true },
+    { "event": "FCs", "delay": 90, "drop": true }
+  ]
+}

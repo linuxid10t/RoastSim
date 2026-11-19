@@ -6,6 +6,7 @@ The aim is "behaves like the real machine for the reasons the real machine does"
 
 A batch is **N parcels** (default 200). Each parcel stands for a group of similar beans and has:
 
+* **Size and density:** bean size comes from mass alone (at a reference density of 700). The coffee's free-settled `density` (g/L) then acts on the bean as a material: harder, denser beans conduct to the core more slowly (`G × (700/ρ)³`) and release water a little more slowly (`× 700/ρ`). Dense coffee cracks later and hotter with a bigger core lag; it is never a "smaller, faster" bean.
 * **Two thermal nodes:** surface (35 % of mass) and core, coupled by `G = 7·k·d`. Fast heating makes a surface–core gradient, which drives tipping and the gap between whole-bean and ground Agtron.
 * **Heat capacity** of dry matter `cp = 1100 + 3.5·T J/kg·K`, plus the water still present.
 * **Drying** (Schwartzberg form): `dX/dt = −A (X−Xeq)² / d² · exp(−B/T)`, with latent heat 2.5 MJ/kg taken from both nodes. This is the endothermic "drying plateau".

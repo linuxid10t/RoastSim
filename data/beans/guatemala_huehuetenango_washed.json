@@ -1,0 +1,4 @@
+{ "id": "guatemala_huehuetenango_washed", "name": "Guatemala Huehuetenango, washed", "origin": "Guatemala", "process": "washed",
+  "notes": "1,750 m, Bourbon/Caturra. Given: moisture 10.6 %, density 742 g/L, screen 16/17, aw 0.55 (normal, fresh crop). Estimated: bean_mass_mg from screen 16/17, size_rel_sd (graded lot), fc_temp/sc_temp from altitude and density, chaff, green colour.",
+  "moisture_pct": 10.6, "density": 742, "bean_mass_mg": 152, "size_rel_sd": 0.09,
+  "fc_temp": 197, "sc_temp": 225, "chaff_frac": 0.009, "green_rgb": [0.43, 0.52, 0.35] }

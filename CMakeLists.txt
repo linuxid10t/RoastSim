@@ -63,6 +63,10 @@ add_executable(roastsim_script tools/roastsim_script.cpp)
 target_link_libraries(roastsim_script PRIVATE roastsim_core)
 rs_copy_runtime_files(roastsim_script)
 
+# Preset validator + reference roasts (used by the add-bean / add-roaster agent skills).
+add_executable(roastsim_check tools/roastsim_check.cpp)
+target_link_libraries(roastsim_check PRIVATE roastsim_core)
+
 # ------------------------------------------------------------------ service
 if(RS_BUILD_SERVICE)
   find_package(Threads REQUIRED)

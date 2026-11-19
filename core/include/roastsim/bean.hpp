@@ -31,6 +31,13 @@ struct Kinetics {
     double cp_dry_a = 1100.0;
     double cp_dry_b = 3.5;
     double k_bean = 0.20;             // W/(m K) effective conductivity
+    // Bean density (BeanSpec::density, free-settled g/L) relative to density_ref.
+    // Denser, harder beans hold water more tightly and conduct heat to the core
+    // more slowly, so they dry later and crack later. Bean *size* is computed at
+    // density_ref so density never makes a bean smaller (and faster) by accident.
+    double density_ref = 700.0;
+    double density_dry_exp = 1.0;     // drying rate x (ref/density)^exp
+    double density_cond_exp = 3.0;    // surface-core conductance x (ref/density)^exp
     double surface_frac = 0.35;       // mass fraction in the surface node
     double shape_area = 1.20;         // area relative to an equal-volume sphere
     // Exothermic pyrolysis: dxi/dt = k0 exp(-Ea/RT) (1 - xi); heat = H * m_dry0 * dxi
@@ -75,7 +82,7 @@ struct BeanSpec {
     std::string notes;
     double moisture_wb = 0.110;      // wet basis fraction
     double moisture_sd = 0.004;
-    double density = 700.0;          // kg/m^3 single bean density
+    double density = 700.0;          // free-settled density, g/L (= kg/m^3) from spec sheets
     double bean_mass_mg = 150.0;
     double size_rel_sd = 0.10;       // relative sd of single-bean mass
     double fc_temp = 196.0;          // core temperature at first crack (mean)
@@ -85,7 +92,7 @@ struct BeanSpec {
     double chaff_frac = 0.010;       // silverskin mass fraction
     double kinetics_scale = 1.0;     // >1 browns faster (e.g. naturals)
     double green_rgb[3] = {0.46, 0.52, 0.34};
-    double bulk_density = 680.0;     // kg/m^3 of the green pile
+    double bulk_density = 700.0;     // kg/m^3 of the green pile; JSON default = density
     Kinetics kinetics;
 
     static BeanSpec fromJson(const json::Value& v);

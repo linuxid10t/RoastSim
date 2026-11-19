@@ -1,0 +1,24 @@
+{
+  "id": "drum_sample_1kg_gas",
+  "name": "Sample drum, 1 kg (gas, cast iron)",
+  "description": "Sample-style 1 kg gas roaster: a single-wall cast-iron drum (30 x 35 cm) over a 2.5 kW propane burner, separate exhaust fan with damper, fixed drum speed. The heavy drum stores a lot of heat: preheat to about 200 C exhaust; with 800 g at 70 % gas first crack comes around 8:30.",
+  "kind": "drum",
+  "batch": { "default_g": 800, "min_g": 300, "max_g": 1200 },
+  "controls": [
+    { "id": "heat", "label": "Gas", "default": 0, "slew_per_s": 20 },
+    { "id": "fan",  "label": "Damper", "default": 40 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 12, "tau_bean_s": 11.0 },
+    { "id": "ET", "label": "Exhaust", "location": "exhaust_air", "tau_air_s": 8 }
+  ],
+  "drum": {
+    "heat_source": "gas", "heat_max_W": 2500, "heat_min_frac": 0.1, "heat_tau": 1.2, "efficiency": 0.7,
+    "frac_drum": 0.6, "frac_air": 0.4,
+    "drum_mass_kg": 16, "drum_cp": 460, "drum_diameter_m": 0.30, "drum_length_m": 0.35,
+    "double_wall": false, "loss_UA": 1.2,
+    "airflow_max": 0.0045, "airflow_min_frac": 0.2, "fan_tau": 1.5,
+    "h_air_ref": 12, "wall_air_UA": 10.5, "h_contact": 220, "emissivity": 0.75,
+    "rpm_max": 64, "unevenness": 0.03, "bt_probe_full_kg": 0.4
+  }
+}
