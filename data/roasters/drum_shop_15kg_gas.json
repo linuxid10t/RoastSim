@@ -1,0 +1,26 @@
+{
+  "id": "drum_shop_15kg_gas",
+  "name": "Shop drum, 15 kg (gas, double wall)",
+  "description": "Production 15 kg gas drum. Same model as the 5 kg machine, scaled up: bigger burner, much heavier drum, slower response.",
+  "kind": "drum",
+  "batch": { "default_g": 12000, "min_g": 6000, "max_g": 16000 },
+  "controls": [
+    { "id": "heat", "label": "Gas", "default": 0, "slew_per_s": 15 },
+    { "id": "fan",  "label": "Airflow", "default": 45 },
+    { "id": "drum", "label": "Drum speed", "default": 75 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 20, "tau_bean_s": 16.0 },
+    { "id": "ET", "label": "Exhaust", "location": "exhaust_air", "tau_air_s": 12 },
+    { "id": "Inlet", "label": "Inlet air", "location": "inlet_air", "tau_air_s": 8 }
+  ],
+  "drum": {
+    "heat_source": "gas", "heat_max_W": 60000, "heat_min_frac": 0.12, "heat_tau": 1.5, "efficiency": 0.65,
+    "frac_drum": 0.45, "frac_air": 0.55,
+    "drum_mass_kg": 190, "drum_cp": 490, "drum_diameter_m": 0.68, "drum_length_m": 0.85,
+    "double_wall": true, "outer_frac": 0.5, "wall_G": 300, "loss_UA": 11,
+    "airflow_max": 0.08, "airflow_min_frac": 0.25, "fan_tau": 3.0,
+    "h_air_ref": 16, "wall_air_UA": 60, "h_contact": 220, "emissivity": 0.7,
+    "rpm_max": 60, "unevenness": 0.03, "bt_probe_full_kg": 6
+  }
+}

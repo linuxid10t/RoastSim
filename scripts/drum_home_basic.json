@@ -1,0 +1,12 @@
+{
+  "roaster": "drum_home_1kg", "bean": "colombia_washed", "batch_g": 500, "seed": 2, "max_s": 2400,
+  "preheat_C": 190,
+  "actions": [
+    { "at": 0, "set": { "fan": 30, "drum": 60 } },
+    { "at": 0, "set": { "heat": 85 } },
+    { "at": 1, "charge": true },
+    { "bt_ge": 160, "set": { "heat": 75, "fan": 40 } },
+    { "event": "FCs", "delay": 0, "set": { "heat": 55, "fan": 55 } },
+    { "event": "FCs", "delay": 100, "drop": true }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "drum_tabletop_ir",
+  "name": "Tabletop drum, 250 g (IR heater)",
+  "description": "Small rotisserie-style drum under a quartz infrared element. Most heat arrives as radiation straight onto the tumbling beans, so it responds fast but is easy to tip.",
+  "kind": "drum",
+  "batch": { "default_g": 225, "min_g": 120, "max_g": 300 },
+  "controls": [
+    { "id": "heat", "label": "IR power", "default": 0 },
+    { "id": "fan",  "label": "Exhaust fan", "default": 40 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 8, "tau_bean_s": 8.0 },
+    { "id": "ET", "label": "Drum air", "location": "chamber_air", "tau_air_s": 5 }
+  ],
+  "drum": {
+    "heat_source": "ir", "heat_max_W": 1300, "heat_tau": 4.0, "efficiency": 0.75,
+    "frac_drum": 0.45, "frac_air": 0.15, "frac_beans_rad": 0.40, "nominal_V": 120,
+    "drum_mass_kg": 1.4, "drum_cp": 480, "drum_diameter_m": 0.15, "drum_length_m": 0.20,
+    "double_wall": false, "loss_UA": 2.2,
+    "airflow_max": 0.006, "airflow_min_frac": 0.2, "fan_tau": 1.0,
+    "h_air_ref": 9, "wall_air_UA": 2.5, "h_contact": 140, "emissivity": 0.7,
+    "rpm_max": 55, "unevenness": 0.04, "bt_probe_full_kg": 0.18
+  }
+}

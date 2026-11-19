@@ -1,0 +1,9 @@
+{
+  "roaster": "drum_tabletop_ir", "bean": "ethiopia_natural", "batch_g": 225, "seed": 6, "max_s": 2400,
+  "actions": [
+    { "at": 0, "set": { "heat": 100, "fan": 30 } },
+    { "at": 90, "charge": true },
+    { "event": "FCs", "delay": 0, "set": { "heat": 70, "fan": 60 } },
+    { "event": "FCs", "delay": 90, "drop": true }
+  ]
+}

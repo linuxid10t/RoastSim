@@ -1,0 +1,9 @@
+{
+  "roaster": "stir_pan", "bean": "colombia_washed", "batch_g": 200, "seed": 4, "max_s": 2400,
+  "actions": [
+    { "at": 0, "set": { "heat": 100, "stir": 70, "fan": 30 } },
+    { "at": 60, "charge": true },
+    { "event": "FCs", "delay": 0, "set": { "heat": 75, "fan": 60 } },
+    { "event": "FCs", "delay": 90, "drop": true }
+  ]
+}

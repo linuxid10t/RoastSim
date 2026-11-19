@@ -1,0 +1,11 @@
+{
+  "roaster": "air_roaster", "bean": "colombia_washed", "batch_g": 150, "seed": 5, "max_s": 2400,
+  "actions": [
+    { "at": 0, "set": { "heat": 100, "fan": 90 } },
+    { "at": 20, "charge": true },
+    { "roast_at": 60, "set": { "fan": 75 } },
+    { "bt_ge": 180, "set": { "fan": 65 } },
+    { "event": "FCs", "delay": 0, "set": { "heat": 80 } },
+    { "event": "FCs", "delay": 90, "drop": true }
+  ]
+}

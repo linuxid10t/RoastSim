@@ -1,0 +1,182 @@
+#include <cstring>
+#include <memory>
+
+#include "roastsim/host.hpp"
+#include "roastsim/roastsim.h"
+
+using namespace roastsim;
+
+struct rs_host {
+    std::unique_ptr<Host> host;
+};
+
+namespace {
+void copyStr(const std::string& s, char* out, size_t len) {
+    if (!out || len == 0) return;
+    size_t n = s.size() < len - 1 ? s.size() : len - 1;
+    std::memcpy(out, s.data(), n);
+    out[n] = '\0';
+}
+}  // namespace
+
+extern "C" {
+
+int rs_api_version(void) { return RS_API_VERSION; }
+
+rs_host* rs_host_create(const char* config_json, char* err, size_t errlen) {
+    HostConfig cfg;
+    if (config_json && *config_json) {
+        std::string perr;
+        json::Value v = json::Value::parse(config_json, &perr);
+        if (!perr.empty()) {
+            copyStr("config JSON: " + perr, err, errlen);
+            return nullptr;
+        }
+        cfg = HostConfig::fromJson(v, cfg);
+    }
+    auto* h = new rs_host;
+    h->host = std::make_unique<Host>(cfg);
+    return h;
+}
+
+int rs_host_start(rs_host* h, char* err, size_t errlen) {
+    if (!h) return 0;
+    std::string e;
+    if (!h->host->start(&e)) {
+        copyStr(e, err, errlen);
+        return 0;
+    }
+    return 1;
+}
+
+void rs_host_stop(rs_host* h) {
+    if (h) h->host->stop();
+}
+
+void rs_host_destroy(rs_host* h) { delete h; }
+
+size_t rs_host_command(rs_host* h, const char* json, const char* origin, char* out, size_t outlen) {
+    if (!h || !json) return 0;
+    std::string perr;
+    json::Value cmd = json::Value::parse(json, &perr);
+    json::Value reply;
+    if (!perr.empty()) {
+        reply = json::Value::object();
+        reply["ok"] = false;
+        reply["error"] = "bad JSON: " + perr;
+    } else {
+        reply = h->host->command(cmd, origin ? origin : "capi");
+    }
+    std::string s = reply.dump();
+    copyStr(s, out, outlen);
+    return s.size();
+}
+
+int rs_host_get_state(rs_host* h, rs_state* o) {
+    if (!h || !o || o->struct_size < sizeof(rs_state)) return 0;
+    Snapshot s = h->host->snapshot();
+    std::uint64_t next = h->host->historyEnd();
+    std::memset(reinterpret_cast<char*>(o) + sizeof(uint32_t), 0, sizeof(rs_state) - sizeof(uint32_t));
+    o->t_session = s.t_session;
+    o->t_roast = s.t_roast;
+    o->phase = static_cast<int>(s.phase);
+    o->bean_location = static_cast<int>(s.bean_location);
+    o->bt = s.bt;
+    o->et = s.et;
+    o->ror_bt = s.ror_bt;
+    o->ror_et = s.ror_et;
+    for (int i = 0; i < kControlCount && i < 8; ++i) {
+        o->controls[i] = s.controls[i];
+        o->actuators[i] = s.actuators[i];
+        if (s.has_control[i]) o->control_mask |= 1u << i;
+    }
+    o->bean_mean_c = s.beans.T_mean;
+    o->bean_surface_c = s.beans.T_surface;
+    o->bean_core_c = s.beans.T_core;
+    o->moisture_pct = s.beans.moisture_pct;
+    o->weight_loss_pct = s.beans.weight_loss_pct;
+    o->agtron_whole = s.beans.agtron_whole;
+    o->agtron_ground = s.beans.agtron_ground;
+    o->agtron_sd = s.beans.agtron_sd;
+    o->fc_frac = s.beans.fc_frac;
+    o->sc_frac = s.beans.sc_frac;
+    o->smoke = s.smoke;
+    for (int i = 0; i < 3; ++i) o->bean_rgb[i] = static_cast<float>(s.beans.rgb[i]);
+    o->pops_fc = s.pops_fc;
+    o->pops_sc = s.pops_sc;
+    o->alarms = s.alarms;
+    o->heater_w = s.tele.heater_W;
+    o->airflow_g_s = s.tele.airflow_kg_s * 1000.0;
+    o->inlet_c = s.tele.inlet_C;
+    o->exhaust_c = s.tele.exhaust_C;
+    o->wall_c = s.tele.wall_C;
+    o->element_c = s.tele.element_C;
+    o->agitation = s.tele.agitation;
+    o->mix_quality = s.tele.mix_quality;
+    o->time_scale = h->host->timeScale();
+    o->paused = h->host->paused() ? 1 : 0;
+    o->logger_connected = h->host->loggerConnected() ? 1 : 0;
+    o->event_seq = s.last_event_seq;
+    o->history_end = next;
+    o->batch_g = s.batch_g;
+    return 1;
+}
+
+int rs_host_set_control(rs_host* h, int control, double percent) {
+    if (!h || control < 0 || control >= kControlCount) return 0;
+    return h->host->setControl(static_cast<Control>(control), percent, "ui") ? 1 : 0;
+}
+
+int rs_host_get_history(rs_host* h, uint64_t from_index, rs_sample* out, int max, uint64_t* next_index) {
+    if (!h || !out || max <= 0) return 0;
+    std::uint64_t next = 0;
+    auto v = h->host->historySince(from_index, &next, static_cast<std::size_t>(max));
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        const HistorySample& s = v[i];
+        out[i] = rs_sample{s.t, s.t_roast, s.bt, s.et, s.ror_bt, s.ror_et, s.bean_true, s.heat, s.fan, s.drum};
+    }
+    if (next_index) *next_index = next;
+    return static_cast<int>(v.size());
+}
+
+int rs_host_get_visual(rs_host* h, rs_visual_info* info, rs_visual_bean* beans, int max_beans) {
+    if (!h) return 0;
+    VisualState v = h->host->visual();
+    if (info && info->struct_size >= sizeof(rs_visual_info)) {
+        info->kind = static_cast<int>(v.kind);
+        info->bean_location = static_cast<int>(v.bean_location);
+        info->chamber_diameter = v.geometry.chamber_diameter;
+        info->chamber_height = v.geometry.chamber_height;
+        info->agitation = v.agitation;
+        info->mix_quality = v.mix_quality;
+        info->angle_rad = v.angle_rad;
+        info->fan = v.fan;
+        info->heat = v.heat;
+        info->element_glow = v.element_glow;
+        info->fill = v.fill;
+        info->smoke = v.smoke;
+        info->chaff_airborne = v.chaff_airborne;
+        info->pops_fc = v.pops_fc;
+        info->pops_sc = v.pops_sc;
+        info->frame = v.frame;
+        info->bean_count = static_cast<int>(v.beans.size());
+    }
+    int n = 0;
+    if (beans) {
+        for (; n < max_beans && n < static_cast<int>(v.beans.size()); ++n) {
+            const VisualBean& b = v.beans[static_cast<std::size_t>(n)];
+            rs_visual_bean& o = beans[n];
+            for (int i = 0; i < 3; ++i) o.rgb[i] = b.rgb[i];
+            o.size_mm = b.size_mm;
+            o.oil = b.oil;
+            o.temp_c = b.temp_C;
+            o.count = b.count;
+            o.exposure = b.exposure;
+            o.cracked = b.cracked;
+            o.scorch = b.scorch;
+        }
+    }
+    return n;
+}
+
+}  // extern "C"

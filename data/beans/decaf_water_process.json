@@ -1,0 +1,5 @@
+{ "id": "decaf_water_process", "name": "Decaf (water process)", "origin": "Mexico", "process": "decaf",
+  "notes": "Already brownish when green, porous and fast to colour. Visual cues mislead; very little chaff.",
+  "moisture_pct": 10.2, "density": 650, "bean_mass_mg": 145, "size_rel_sd": 0.10,
+  "fc_temp": 193, "sc_temp": 221, "chaff_frac": 0.004, "kinetics_scale": 1.15,
+  "green_rgb": [0.55, 0.47, 0.32] }

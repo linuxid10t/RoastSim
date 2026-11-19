@@ -1,0 +1,27 @@
+{
+  "id": "popper_modded",
+  "name": "Popcorn popper (modded: SSR heater + DC fan)",
+  "description": "Popcorn popper rewired for Artisan: the heater runs through a solid-state relay (2 s time-proportioning, so ET ripples) and the fan has its own DC supply. Thermostat bypassed; the thermal fuse is still there.",
+  "kind": "fluid_bed",
+  "batch": { "default_g": 100, "min_g": 60, "max_g": 130 },
+  "controls": [
+    { "id": "heat", "label": "Heater (SSR)", "default": 0 },
+    { "id": "fan",  "label": "Fan", "default": 85 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 5, "tau_bean_s": 5.0, "noise_sd": 0.2 },
+    { "id": "ET", "label": "Inlet air", "location": "inlet_air", "tau_air_s": 2.5, "noise_sd": 0.25 }
+  ],
+  "fluid_bed": {
+    "wiring": "independent",
+    "heater_W": 1400, "nominal_V": 120,
+    "element_C": 40, "element_eff": 0.9, "element_loss_UA": 0.4,
+    "fan_max_flow": 0.0075, "fan_tau": 0.6, "fan_min_pct": 25,
+    "wall_C": 300, "wall_UA_in": 1.4, "wall_UA_out": 1.2,
+    "h_ref": 24, "fluidize_flow_per_kg": 0.05, "eject_agitation": 2.6,
+    "unevenness": 0.10,
+    "fuse_C": 330, "fuse_hold_s": 4,
+    "pwm_period_s": 2.0,
+    "chamber_diameter_m": 0.075, "chamber_height_m": 0.14
+  }
+}

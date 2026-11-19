@@ -1,0 +1,5 @@
+{ "id": "sumatra_wet_hulled", "name": "Sumatra Lintong, wet-hulled", "origin": "Indonesia", "process": "wet-hulled",
+  "notes": "High moisture, blue-green, irregular beans. Long drying phase; prone to uneven colour.",
+  "moisture_pct": 12.8, "moisture_sd": 0.007, "density": 680, "bean_mass_mg": 165, "size_rel_sd": 0.16,
+  "fc_temp": 195, "fc_sd": 2.4, "sc_temp": 223, "chaff_frac": 0.006,
+  "green_rgb": [0.36, 0.48, 0.40] }

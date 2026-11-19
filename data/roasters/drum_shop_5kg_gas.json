@@ -1,0 +1,26 @@
+{
+  "id": "drum_shop_5kg_gas",
+  "name": "Shop drum, 5 kg (gas, double wall)",
+  "description": "Commercial 5 kg gas drum roaster: atmospheric burner under a double-wall drum, exhaust fan/damper, cooling tray. Heavy drum = lots of momentum; preheat before charging.",
+  "kind": "drum",
+  "batch": { "default_g": 5000, "min_g": 2000, "max_g": 6000 },
+  "controls": [
+    { "id": "heat", "label": "Gas", "default": 0, "slew_per_s": 20 },
+    { "id": "fan",  "label": "Airflow", "default": 40 },
+    { "id": "drum", "label": "Drum speed", "default": 75 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 18, "tau_bean_s": 14.0 },
+    { "id": "ET", "label": "Exhaust", "location": "exhaust_air", "tau_air_s": 10 },
+    { "id": "Inlet", "label": "Inlet air", "location": "inlet_air", "tau_air_s": 6 }
+  ],
+  "drum": {
+    "heat_source": "gas", "heat_max_W": 22000, "heat_min_frac": 0.12, "heat_tau": 1.2, "efficiency": 0.65,
+    "frac_drum": 0.45, "frac_air": 0.55,
+    "drum_mass_kg": 70, "drum_cp": 490, "drum_diameter_m": 0.45, "drum_length_m": 0.55,
+    "double_wall": true, "outer_frac": 0.5, "wall_G": 120, "loss_UA": 5,
+    "airflow_max": 0.03, "airflow_min_frac": 0.25, "fan_tau": 2.5,
+    "h_air_ref": 16, "wall_air_UA": 25, "h_contact": 220, "emissivity": 0.7,
+    "rpm_max": 75, "unevenness": 0.03, "bt_probe_full_kg": 2.5
+  }
+}

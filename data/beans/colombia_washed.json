@@ -1,0 +1,4 @@
+{ "id": "colombia_washed", "name": "Colombia Huila, washed", "origin": "Colombia", "process": "washed",
+  "notes": "Middle-of-the-road density and moisture; the calibration reference bean.",
+  "moisture_pct": 11.0, "density": 705, "bean_mass_mg": 155, "size_rel_sd": 0.10,
+  "fc_temp": 196, "sc_temp": 224, "chaff_frac": 0.010, "green_rgb": [0.46, 0.52, 0.34] }

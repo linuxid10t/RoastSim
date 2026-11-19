@@ -1,0 +1,12 @@
+{
+  "bind_address": "127.0.0.1",
+  "http_port": 8080,
+  "modbus_port": 502,
+  "tc4_port": "",
+  "roaster": "popper_modded",
+  "bean": "colombia_washed",
+  "units": "C",
+  "time_scale": 1,
+  "lock_realtime_with_logger": true,
+  "artisan_ws": { "push_charge_drop": true, "push_crack_events": true }
+}

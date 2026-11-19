@@ -1,0 +1,50 @@
+:root {
+  --bg: #f6f3ee; --panel: #fffdf9; --ink: #2b2420; --muted: #7a6f66; --line: #e4ddd3;
+  --bt: #c8402a; --et: #4670c8; --ror: #e0962a; --true: #96785a; --accent: #8a5a2b; --warn: #b8432f;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1816; --panel: #24201d; --ink: #efe8e0; --muted: #a59a8f; --line: #3a332d;
+          --bt: #ff7a5c; --et: #7ea2ff; --ror: #ffb44d; --true: #c7a37d; --accent: #d79a5a; --warn: #ff7a5c; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; font-size: 18px; }
+.pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; margin-left: 6px; vertical-align: middle; }
+.pill.on { background: #2e7d4f; color: #fff; } .pill.off { background: var(--line); color: var(--muted); }
+.pickers { display: flex; gap: 6px; flex-wrap: wrap; }
+select, input, button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+input[type=number] { width: 80px; }
+button { cursor: pointer; } button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.warn { background: var(--warn); color: #fff; border-color: var(--warn); }
+main { display: grid; grid-template-columns: 340px 1fr 300px; gap: 12px; padding: 12px 16px; }
+@media (max-width: 1200px) { main { grid-template-columns: 320px 1fr; } .side { grid-column: 1 / -1; } }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; padding: 8px 16px; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+.desc { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.marks button { padding: 3px 7px; font-size: 12px; }
+.slider { display: grid; grid-template-columns: 90px 1fr 64px; align-items: center; gap: 8px; margin: 6px 0; }
+.slider input[type=range] { width: 100%; accent-color: var(--accent); }
+.slider output { text-align: right; font-variant-numeric: tabular-nums; }
+.check { display: flex; gap: 4px; align-items: center; }
+details { margin-top: 10px; } summary { cursor: pointer; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0; }
+.grid2 label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
+.grid2 input { width: 100%; }
+.readouts { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 8px; }
+.big span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.big b { font-size: 26px; font-variant-numeric: tabular-nums; }
+#bt { color: var(--bt); } #et { color: var(--et); } #ror { color: var(--ror); }
+#chart { width: 100%; height: 460px; display: block; }
+.alarms { min-height: 22px; margin-top: 6px; } .alarms span { background: var(--warn); color: #fff; border-radius: 4px; padding: 2px 6px; margin-right: 6px; font-size: 12px; }
+.side h3 { margin: 12px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.side h3:first-child { margin-top: 0; }
+#beans { width: 100%; height: 160px; border-radius: 8px; background: color-mix(in srgb, var(--line) 60%, transparent); }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+td { padding: 2px 0; border-bottom: 1px dashed var(--line); } td:last-child { text-align: right; }
+#events { margin: 0; padding-left: 20px; max-height: 220px; overflow: auto; font-size: 12.5px; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); max-width: 520px; }
+dialog ul { padding-left: 18px; }

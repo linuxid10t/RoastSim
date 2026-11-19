@@ -1,0 +1,5 @@
+{ "id": "brazil_natural", "name": "Brazil Cerrado, natural", "origin": "Brazil", "process": "natural",
+  "notes": "Low-density, low-grown beans with lots of chaff. They run away from you after first crack.",
+  "moisture_pct": 10.6, "density": 660, "bean_mass_mg": 150, "size_rel_sd": 0.11,
+  "fc_temp": 194, "sc_temp": 222, "chaff_frac": 0.013, "kinetics_scale": 1.04,
+  "green_rgb": [0.50, 0.52, 0.38] }

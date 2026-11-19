@@ -1,0 +1,4 @@
+{ "id": "kenya_washed", "name": "Kenya Nyeri AA, washed", "origin": "Kenya", "process": "washed",
+  "notes": "Big, dense, high-grown beans. Take heat well early; first crack comes a little later.",
+  "moisture_pct": 11.4, "density": 745, "bean_mass_mg": 175, "size_rel_sd": 0.08,
+  "fc_temp": 198, "sc_temp": 226, "chaff_frac": 0.009, "green_rgb": [0.42, 0.52, 0.36] }

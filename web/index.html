@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoastSim Control</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">RoastSim <span id="conn" class="pill off">offline</span> <span id="logger" class="pill off">no logger</span></div>
+  <div class="pickers">
+    <select id="roaster" aria-label="Roaster"></select>
+    <select id="bean" aria-label="Green coffee"></select>
+    <button id="load" title="Load the selected roaster (cold machine)">Load</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel controls">
+    <p id="desc" class="desc"></p>
+    <div class="row">
+      <label>Batch <input id="batch" type="number" min="1" step="10" value="100"> g</label>
+      <button id="charge" class="primary">Charge</button>
+      <button id="drop" class="warn">Drop</button>
+    </div>
+    <div id="sliders"></div>
+    <div class="row">
+      <label>Preheat <input id="preheatT" type="number" value="200" step="5"> °C</label>
+      <button id="preheat">Preheat</button>
+      <button id="reset" title="Discard beans and cool the machine">Cold reset</button>
+    </div>
+    <div class="row marks">
+      <span>Mark:</span>
+      <button data-mark="DRY">DRY</button><button data-mark="FCs">FCs</button><button data-mark="FCe">FCe</button>
+      <button data-mark="SCs">SCs</button><button data-mark="SCe">SCe</button>
+    </div>
+    <div class="row">
+      <label>Speed <select id="speed">
+        <option value="0">Pause</option><option value="1" selected>1×</option><option value="2">2×</option>
+        <option value="5">5×</option><option value="10">10×</option><option value="30">30×</option><option value="60">60×</option>
+      </select></label>
+      <label class="check"><input type="checkbox" id="sound" checked> Crack sounds</label>
+      <button id="reportBtn">Report</button>
+    </div>
+    <details>
+      <summary>Environment &amp; faults</summary>
+      <div class="grid2">
+        <label>Ambient °C <input id="env_ambient_C" type="number" step="1"></label>
+        <label>Humidity % <input id="env_humidity_rh" type="number" step="5"></label>
+        <label>Line volts <input id="env_line_voltage" type="number" step="1"></label>
+        <label>Source Ω <input id="env_source_ohms" type="number" step="0.05"></label>
+        <label>Altitude m <input id="env_altitude_m" type="number" step="100"></label>
+        <label>Gas pressure × <input id="env_gas_pressure" type="number" step="0.05"></label>
+      </div>
+      <button id="envApply">Apply environment</button>
+      <div class="row">
+        <select id="faultProbe"></select>
+        <select id="faultType">
+          <option>none</option><option>open</option><option>short</option><option>spikes</option>
+          <option>drift</option><option>stuck</option><option>noisy</option>
+        </select>
+        <button id="faultApply">Set probe fault</button>
+        <button id="repair">Repair machine</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel chartwrap">
+    <div class="readouts">
+      <div class="big"><span>BT</span><b id="bt">--</b></div>
+      <div class="big"><span>ET</span><b id="et">--</b></div>
+      <div class="big"><span>RoR</span><b id="ror">--</b></div>
+      <div class="big"><span>Time</span><b id="time">--:--</b></div>
+      <div class="big"><span>Phase</span><b id="phase">--</b></div>
+    </div>
+    <canvas id="chart"></canvas>
+    <div id="alarms" class="alarms"></div>
+  </section>
+
+  <section class="panel side">
+    <h3>Beans</h3>
+    <canvas id="beans" height="160"></canvas>
+    <table id="beanTable"></table>
+    <h3>Machine</h3>
+    <table id="machineTable"></table>
+    <h3>Events</h3>
+    <ol id="events"></ol>
+  </section>
+</main>
+
+<dialog id="reportDlg">
+  <h2>Roast report</h2>
+  <div id="reportBody"></div>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

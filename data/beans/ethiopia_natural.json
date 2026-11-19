@@ -1,0 +1,5 @@
+{ "id": "ethiopia_natural", "name": "Ethiopia Guji, natural", "origin": "Ethiopia", "process": "natural",
+  "notes": "Small, slightly drier heirloom beans; fruit sugars brown a little faster. Uneven sizes.",
+  "moisture_pct": 10.4, "density": 690, "bean_mass_mg": 128, "size_rel_sd": 0.15,
+  "fc_temp": 195, "fc_sd": 2.2, "sc_temp": 223, "chaff_frac": 0.009, "kinetics_scale": 1.07,
+  "green_rgb": [0.52, 0.52, 0.36] }

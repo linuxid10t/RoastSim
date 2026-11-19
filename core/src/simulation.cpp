@@ -1,0 +1,655 @@
+#include "roastsim/simulation.hpp"
+
+#include <cmath>
+
+namespace roastsim {
+
+namespace {
+
+enum Mark { MCharge, MTp, MDry, MFcs, MFce, MScs, MSce, MDrop, MCool, MCount };
+
+int markIndex(const std::string& t) {
+    static const char* names[] = {"CHARGE", "TP", "DRY", "FCs", "FCe", "SCs", "SCe", "DROP", "COOL"};
+    for (int i = 0; i < MCount; ++i)
+        if (t == names[i]) return i;
+    return -1;
+}
+
+struct AlarmName { std::uint32_t bit; const char* name; };
+const AlarmName kAlarmNames[] = {
+    {AlarmThermostatOpen, "thermostat_open"}, {AlarmFuseBlown, "fuse_blown"},
+    {AlarmBeansEjecting, "beans_ejecting"},   {AlarmBedStalled, "bed_stalled"},
+    {AlarmScorching, "scorching"},            {AlarmSmokeHeavy, "smoke_heavy"},
+    {AlarmFireRisk, "fire_risk"},             {AlarmOverheat, "overheat"},
+    {AlarmCentrifuging, "centrifuging"},      {AlarmProbeFault, "probe_fault"},
+};
+
+}  // namespace
+
+const char* roastLevelName(double ag) {
+    if (ag >= 90) return "Very light (Cinnamon)";
+    if (ag >= 78) return "Light (New England)";
+    if (ag >= 68) return "City";
+    if (ag >= 60) return "City+";
+    if (ag >= 52) return "Full City";
+    if (ag >= 44) return "Full City+";
+    if (ag >= 36) return "Vienna";
+    if (ag >= 28) return "French";
+    return "Italian / charred";
+}
+
+Simulation::Simulation() = default;
+Simulation::~Simulation() = default;
+
+void Simulation::setSeed(std::uint64_t seed) { rng_.reseed(seed); }
+
+void Simulation::load(const RoasterDef& roaster, const BeanSpec& bean) {
+    machine_.reset();
+    roaster_ = roaster;
+    bean_ = bean;
+    machine_ = createMachine(roaster_);
+    probes_.clear();
+    for (const auto& pd : roaster_.probes) probes_.emplace_back(pd);
+    for (int i = 0; i < kControlCount; ++i) target_[i] = actual_[i] = 0;
+    for (const auto& cd : roaster_.controls) {
+        target_[static_cast<int>(cd.id)] = actual_[static_cast<int>(cd.id)] = cd.def;
+    }
+    coldReset();
+}
+
+void Simulation::setBean(const BeanSpec& bean) { bean_ = bean; }
+
+void Simulation::setControl(Control c, double pct) {
+    const ControlDef* cd = roaster_.control(c);
+    if (!cd) return;
+    double v = clampd(pct, cd->min, cd->max);
+    if (cd->toggle) v = v >= 50 ? cd->max : cd->min;
+    target_[static_cast<int>(c)] = v;
+}
+
+int Simulation::probeIndex(const char* id) const { return roaster_.probeIndex(id); }
+
+void Simulation::addEvent(const std::string& type, const std::string& origin, const std::string& detail) {
+    SimEvent e;
+    e.seq = ++seq_;
+    e.type = type;
+    e.detail = detail;
+    e.origin = origin;
+    e.t_session = t_;
+    e.t_roast = chargeT_ >= 0 ? t_ - chargeT_ : -1;
+    int bi = probeIndex("BT");
+    e.bt = bi >= 0 ? probes_[static_cast<std::size_t>(bi)].read() : 0;
+    events_.push_back(e);
+    if (events_.size() > 2000) events_.erase(events_.begin(), events_.begin() + 500);
+    int m = markIndex(type);
+    if (m >= 0) marked_[m] = true;
+}
+
+std::vector<SimEvent> Simulation::eventsSince(std::uint64_t seq) const {
+    std::vector<SimEvent> out;
+    for (const auto& e : events_)
+        if (e.seq > seq) out.push_back(e);
+    return out;
+}
+
+bool Simulation::charge(double batch_g, const std::string& origin, std::string* err) {
+    if (beanLoc_ == BeanLocation::Machine) {
+        if (err) *err = "beans are already in the roaster";
+        return false;
+    }
+    if (!(batch_g > 0)) {
+        if (err) *err = "batch size must be positive";
+        return false;
+    }
+    if (batch_g > roaster_.batch.max_g * 1.5) {
+        if (err) *err = "batch far above this roaster's capacity";
+        return false;
+    }
+    double T0 = roaster_.charge_bean_temp_C > -273 ? roaster_.charge_bean_temp_C : env_.ambient_C;
+    beans_.init(bean_, batch_g / 1000.0, parcelCount_, T0, rng_);
+    beanLoc_ = BeanLocation::Machine;
+    batchG_ = batch_g;
+    initialBeans_ = beans_.totalBeans();
+    chargeT_ = t_;
+    dropT_ = -1;
+    phase_ = RoastPhase::Roasting;
+    for (bool& m : marked_) m = false;
+    tpMin_ = 1e9;
+    tpMinT_ = -1;
+    popsFc_ = popsSc_ = 0;
+    organicRate_ = 0;
+    // Keep one minute of pre-charge history so graphs show the drop into TP.
+    while (!history_.empty() && history_.front().t < t_ - 60.0) {
+        history_.pop_front();
+        ++historyBase_;
+    }
+    for (auto& h : history_) h.t_roast = static_cast<float>(h.t - t_);
+    addEvent("CHARGE", origin);
+    return true;
+}
+
+bool Simulation::drop(const std::string& origin, std::string* err) {
+    if (beanLoc_ != BeanLocation::Machine) {
+        if (err) *err = "no beans in the roaster";
+        return false;
+    }
+    beanLoc_ = BeanLocation::Tray;
+    dropT_ = t_;
+    phase_ = RoastPhase::Cooling;
+    addEvent("DROP", origin);
+    return true;
+}
+
+bool Simulation::coolEnd(const std::string& origin) {
+    if (phase_ != RoastPhase::Cooling) return false;
+    phase_ = RoastPhase::Done;
+    addEvent("COOL", origin);
+    return true;
+}
+
+void Simulation::markEvent(const std::string& type, const std::string& origin) {
+    int m = markIndex(type);
+    if (m < 0) {
+        addEvent("NOTE", origin, type);
+        return;
+    }
+    if (m == MCharge || m == MDrop || m == MCool) return;  // use the real commands
+    if (phase_ != RoastPhase::Roasting || marked_[m]) return;
+    addEvent(type, origin);
+}
+
+void Simulation::emptyMachine() {
+    beans_.clear();
+    beanLoc_ = BeanLocation::None;
+    phase_ = RoastPhase::Idle;
+    chargeT_ = dropT_ = -1;
+}
+
+void Simulation::coldReset() {
+    emptyMachine();
+    if (machine_) machine_->reset(env_);
+    for (auto& p : probes_) p.reset(env_.ambient_C);
+    btBuf_.clear();
+    etBuf_.clear();
+    rorBt_ = rorEt_ = 0;
+    historyBase_ += history_.size();
+    history_.clear();
+    events_.clear();
+    lastAlarms_ = 0;
+    smoke_ = chaffRate_ = organicRate_ = 0;
+    popsFc_ = popsSc_ = 0;
+    nextHistory_ = nextRorSample_ = t_;
+    for (int i = 0; i < kControlCount; ++i) actual_[i] = target_[i];
+}
+
+void Simulation::repair() {
+    if (machine_) machine_->repair();
+    addEvent("NOTE", "user", "repaired");
+}
+
+bool Simulation::setProbeFault(const std::string& probeId, ProbeFault f, double param) {
+    for (auto& p : probes_) {
+        if (p.def().id == probeId) {
+            p.setFault(f, param);
+            return true;
+        }
+    }
+    return false;
+}
+
+double Simulation::preheat(double target_C, double maxSeconds) {
+    if (beanLoc_ == BeanLocation::Machine || !machine_) return -1;
+    Control ctl = roaster_.hasControl(Control::Heat) ? Control::Heat : Control::Voltage;
+    if (!roaster_.hasControl(ctl)) return -1;
+    // Make sure air moves / drum turns so nothing overheats while we wait.
+    for (Control c : {Control::Fan, Control::Drum, Control::Stir}) {
+        const ControlDef* cd = roaster_.control(c);
+        if (cd && target_[static_cast<int>(c)] < cd->def) target_[static_cast<int>(c)] = cd->def;
+    }
+    int ei = probeIndex("ET");
+    if (ei < 0) return -1;
+    double I = target_[static_cast<int>(ctl)] / 100.0;
+    double stable = 0, used = 0, prevWall = machine_->telemetry().wall_C;
+    while (used < maxSeconds) {
+        double et = probes_[static_cast<std::size_t>(ei)].trueTemp();
+        double err = target_C - et;
+        I = clamp01(I + 0.0004 * err * kStep);
+        double u = clamp01(0.04 * err + I);
+        target_[static_cast<int>(ctl)] = u * 100.0;
+        stepOnce(kStep);
+        used += kStep;
+        double wall = machine_->telemetry().wall_C;
+        double wallRate = std::fabs(wall - prevWall) / kStep;
+        prevWall = wall;
+        if (std::fabs(err) < 1.5 && wallRate < 0.05) stable += kStep;
+        else stable = 0;
+        if (stable > 90) break;
+    }
+    target_[static_cast<int>(ctl)] = std::round(target_[static_cast<int>(ctl)]);
+    addEvent("NOTE", "preheat", "preheated to " + json::formatNumber(target_C, 1));
+    return used;
+}
+
+void Simulation::step(double dt) {
+    // Integrate in fixed slices so results don't depend on the caller's frame
+    // rate; the fractional remainder carries over to the next call.
+    double total = dt + stepCarry_;
+    int n = static_cast<int>(total / kStep);
+    stepCarry_ = total - n * kStep;
+    for (int i = 0; i < n; ++i) stepOnce(kStep);
+}
+
+void Simulation::stepTray(double dt) {
+    const Kinetics& k = beans_.kinetics();
+    bool on = actual_[static_cast<int>(Control::Cooling)] >= 50.0;
+    double h = on ? roaster_.cool.h_on : roaster_.cool.h_off;
+    beans_.updateMixing(dt, on ? 2.0 : 30.0, rng_);
+    for (auto& p : beans_.parcels()) {
+        double e = exposure(p, 0.2, 0.05);
+        p.q_in = h * p.area(k) * e * (env_.ambient_C - p.T_s);
+        p.spot_T = p.T_s;
+    }
+}
+
+void Simulation::stepOnce(double dt) {
+    if (!machine_) return;
+    // ---- actuator slew
+    for (const auto& cd : roaster_.controls) {
+        int i = static_cast<int>(cd.id);
+        if (cd.slew_per_s > 0) {
+            double d = target_[i] - actual_[i];
+            double m = cd.slew_per_s * dt;
+            actual_[i] += clampd(d, -m, m);
+        } else {
+            actual_[i] = target_[i];
+        }
+    }
+
+    MachineInputs in;
+    in.env = &env_;
+    for (int i = 0; i < kControlCount; ++i) in.u[i] = clamp01(actual_[i] / 100.0);
+    in.beans = (beanLoc_ == BeanLocation::Machine) ? &beans_ : nullptr;
+    in.rng = &rng_;
+    machine_->step(dt, in);
+
+    BatchStepResult res;
+    if (beanLoc_ == BeanLocation::Tray) stepTray(dt);
+    if (beanLoc_ != BeanLocation::None) res = beans_.integrate(dt, rng_);
+    popsFc_ += static_cast<std::uint64_t>(res.pops_fc);
+    popsSc_ += static_cast<std::uint64_t>(res.pops_sc);
+
+    double a = 1.0 - std::exp(-dt / 3.0);
+    organicRate_ += (res.organic_loss_kg / dt - organicRate_) * a;
+    chaffRate_ += (res.chaff_released_kg * 1000.0 / dt - chaffRate_) * a;
+    double kg = std::max(0.05, batchG_ / 1000.0);
+    double smokeTarget = clamp01(organicRate_ * 1000.0 * 60.0 / kg / 25.0);
+    // Chaff left in a hot pan (stir roasters) smoulders.
+    const MachineTelemetry& tel = machine_->telemetry();
+    if (roaster_.kind == RoasterKind::StirPan && tel.wall_C > 260 && beanLoc_ == BeanLocation::Machine)
+        smokeTarget = std::min(1.0, smokeTarget + 0.15 * smoothstep(260, 320, tel.wall_C));
+    smoke_ += (smokeTarget - smoke_) * a;
+
+    updateProbes(dt);
+    t_ += dt;
+    ++frame_;
+
+    if (t_ >= nextRorSample_) {
+        nextRorSample_ = t_ + 0.5;
+        auto push = [&](std::deque<std::pair<double, double>>& buf, const char* id) {
+            int i = probeIndex(id);
+            if (i < 0) return;
+            double v = probes_[static_cast<std::size_t>(i)].read();
+            if (v == -1.0) return;
+            buf.emplace_back(t_, v);
+            while (!buf.empty() && buf.front().first < t_ - 30.0) buf.pop_front();
+        };
+        push(btBuf_, "BT");
+        push(etBuf_, "ET");
+        rorBt_ = rorFrom(btBuf_);
+        rorEt_ = rorFrom(etBuf_);
+        detectEvents();
+    }
+    if (t_ >= nextHistory_) {
+        nextHistory_ = t_ + 1.0;
+        sampleHistory();
+    }
+}
+
+void Simulation::updateProbes(double dt) {
+    const BeanBatch* inMachine = (beanLoc_ == BeanLocation::Machine) ? &beans_ : nullptr;
+    for (auto& p : probes_) {
+        double imm = 0;
+        double Tenv = p.def().loc == ProbeLocation::Ambient ? env_.ambient_C
+                                                           : machine_->probeEnv(p.def().loc, inMachine, imm);
+        p.step(dt, Tenv, imm, rng_);
+    }
+}
+
+double Simulation::rorFrom(const std::deque<std::pair<double, double>>& buf) const {
+    // Least-squares slope over the window, in degrees per minute.
+    if (buf.size() < 4) return 0;
+    double n = 0, st = 0, sv = 0, stt = 0, stv = 0;
+    double t0 = buf.front().first;
+    for (const auto& s : buf) {
+        double t = s.first - t0;
+        n += 1;
+        st += t;
+        sv += s.second;
+        stt += t * t;
+        stv += t * s.second;
+    }
+    double den = n * stt - st * st;
+    if (std::fabs(den) < 1e-9) return 0;
+    return (n * stv - st * sv) / den * 60.0;
+}
+
+void Simulation::sampleHistory() {
+    HistorySample h;
+    h.t = static_cast<float>(t_);
+    h.t_roast = static_cast<float>(chargeT_ >= 0 ? t_ - chargeT_ : -1);
+    int bi = probeIndex("BT"), ei = probeIndex("ET");
+    h.bt = static_cast<float>(probes_[static_cast<std::size_t>(bi)].read());
+    h.et = static_cast<float>(probes_[static_cast<std::size_t>(ei)].read());
+    h.ror_bt = static_cast<float>(rorBt_);
+    h.ror_et = static_cast<float>(rorEt_);
+    h.bean_true = static_cast<float>(beanLoc_ != BeanLocation::None ? beans_.meanT() : 0.0);
+    h.heat = static_cast<float>(actual_[static_cast<int>(
+        roaster_.hasControl(Control::Heat) ? Control::Heat : Control::Voltage)]);
+    h.fan = static_cast<float>(actual_[static_cast<int>(Control::Fan)]);
+    h.drum = static_cast<float>(actual_[static_cast<int>(
+        roaster_.hasControl(Control::Drum) ? Control::Drum : Control::Stir)]);
+    history_.push_back(h);
+    // ~6 hours max
+    while (history_.size() > 21600) {
+        history_.pop_front();
+        ++historyBase_;
+    }
+}
+
+void Simulation::detectEvents() {
+    // Alarms (machine + simulation level), edge-triggered into the event log.
+    std::uint32_t alarms = machine_->telemetry().alarms;
+    double scorchingFrac = 0, meanT = 0, fc = 0, sc = 0, n = 0;
+    if (beanLoc_ != BeanLocation::None) {
+        const Kinetics& k = beans_.kinetics();
+        for (const auto& p : beans_.parcels()) {
+            n += p.count;
+            meanT += p.count * p.meanT(k);
+            fc += p.count * p.fc_frac;
+            sc += p.count * p.sc_frac;
+            if (p.spot_T > k.scorch_T) scorchingFrac += p.count;
+        }
+        if (n > 0) {
+            meanT /= n;
+            fc /= n;
+            sc /= n;
+            scorchingFrac /= n;
+        }
+    }
+    if (beanLoc_ == BeanLocation::Machine && scorchingFrac > 0.05) alarms |= AlarmScorching;
+    if (smoke_ > 0.7) alarms |= AlarmSmokeHeavy;
+    if (beanLoc_ == BeanLocation::Machine && meanT > 250) alarms |= AlarmFireRisk;
+    for (const auto& p : probes_)
+        if (p.fault() != ProbeFault::None) alarms |= AlarmProbeFault;
+    // Latch alarms with a 10 s hold so a condition hovering around its
+    // threshold produces one event, not a burst.
+    for (int b = 0; b < 32; ++b) {
+        std::uint32_t bit = 1u << b;
+        if (alarms & bit) {
+            alarmSeen_[b] = t_;
+            if (!(lastAlarms_ & bit)) {
+                lastAlarms_ |= bit;
+                for (const auto& an : kAlarmNames)
+                    if (an.bit == bit) addEvent("ALARM", "sim", an.name);
+            }
+        } else if ((lastAlarms_ & bit) && t_ - alarmSeen_[b] > 10.0) {
+            lastAlarms_ &= ~bit;
+        }
+    }
+
+    if (phase_ == RoastPhase::Roasting) {
+        double tr = t_ - chargeT_;
+        int bi = probeIndex("BT");
+        double bt = probes_[static_cast<std::size_t>(bi)].read();
+        if (!marked_[MTp] && bt != -1.0) {
+            if (bt < tpMin_) {
+                tpMin_ = bt;
+                tpMinT_ = t_;
+            } else if (tr > 15 && bt > tpMin_ + 2.0) {
+                addEvent("TP", "sim");
+                events_.back().t_session = tpMinT_;
+                events_.back().t_roast = tpMinT_ - chargeT_;
+                events_.back().bt = tpMin_;
+            }
+        }
+        if (!marked_[MDry] && meanT >= 150.0) addEvent("DRY", "sim");
+        if (!marked_[MFcs] && fc >= 0.02) addEvent("FCs", "sim");
+        if (marked_[MFcs] && !marked_[MFce] && fc >= 0.90) addEvent("FCe", "sim");
+        if (!marked_[MScs] && sc >= 0.02) addEvent("SCs", "sim");
+        if (marked_[MScs] && !marked_[MSce] && sc >= 0.85) addEvent("SCe", "sim");
+    } else if (phase_ == RoastPhase::Cooling) {
+        if (meanT < 40.0 || t_ - dropT_ > 900) coolEnd("sim");
+    }
+}
+
+Snapshot Simulation::snapshot() const {
+    Snapshot s;
+    s.t_session = t_;
+    s.t_roast = chargeT_ >= 0 ? t_ - chargeT_ : -1;
+    s.phase = phase_;
+    s.bean_location = beanLoc_;
+    s.roaster_id = roaster_.id;
+    s.roaster_name = roaster_.name;
+    s.bean_id = bean_.id;
+    s.bean_name = bean_.name;
+    s.kind = roaster_.kind;
+    for (const auto& p : probes_) {
+        ProbeReading r;
+        r.id = p.def().id;
+        r.loc = p.def().loc;
+        r.value = p.read();
+        r.fault = p.fault() != ProbeFault::None;
+        if (r.id == "BT") s.bt = r.value;
+        if (r.id == "ET") s.et = r.value;
+        s.probes.push_back(r);
+    }
+    s.ror_bt = rorBt_;
+    s.ror_et = rorEt_;
+    for (int i = 0; i < kControlCount; ++i) {
+        s.controls[i] = target_[i];
+        s.actuators[i] = actual_[i];
+        s.has_control[i] = roaster_.hasControl(static_cast<Control>(i));
+    }
+    if (machine_) s.tele = machine_->telemetry();
+    if (beanLoc_ != BeanLocation::None) s.beans = beans_.summary();
+    s.batch_g = batchG_;
+    s.smoke = smoke_;
+    s.chaff_rate_g_s = chaffRate_;
+    s.pops_fc = popsFc_;
+    s.pops_sc = popsSc_;
+    s.alarms = lastAlarms_;
+    s.env = env_;
+    s.last_event_seq = seq_;
+    return s;
+}
+
+VisualState Simulation::visual() const {
+    VisualState v;
+    v.frame = frame_;
+    v.t_session = t_;
+    v.kind = roaster_.kind;
+    v.roaster_id = roaster_.id;
+    switch (roaster_.kind) {
+        case RoasterKind::FluidBed:
+            v.geometry.chamber_diameter = static_cast<float>(roaster_.fluid.chamber_diameter_m);
+            v.geometry.chamber_height = static_cast<float>(roaster_.fluid.chamber_height_m);
+            break;
+        case RoasterKind::Drum:
+            v.geometry.chamber_diameter = static_cast<float>(roaster_.drum.drum_diameter_m);
+            v.geometry.chamber_height = static_cast<float>(roaster_.drum.drum_length_m);
+            break;
+        case RoasterKind::StirPan:
+            v.geometry.chamber_diameter = static_cast<float>(roaster_.pan.pan_diameter_m);
+            v.geometry.chamber_height = static_cast<float>(roaster_.pan.dome_height_m);
+            break;
+    }
+    v.bean_location = beanLoc_;
+    if (machine_) {
+        const MachineTelemetry& t = machine_->telemetry();
+        v.agitation = static_cast<float>(t.agitation);
+        v.mix_quality = static_cast<float>(t.mix_quality);
+        v.angle_rad = static_cast<float>(t.angle_rad);
+        v.fill = static_cast<float>(t.fill);
+        v.element_glow = static_cast<float>(smoothstep(450, 900, t.element_C));
+        v.alarms = t.alarms | lastAlarms_;
+    }
+    v.fan = static_cast<float>(actual_[static_cast<int>(Control::Fan)] / 100.0);
+    v.heat = static_cast<float>(actual_[static_cast<int>(
+                 roaster_.hasControl(Control::Heat) ? Control::Heat : Control::Voltage)] / 100.0);
+    v.smoke = static_cast<float>(smoke_);
+    v.chaff_airborne = static_cast<float>(chaffRate_);
+    v.pops_fc = popsFc_;
+    v.pops_sc = popsSc_;
+    if (beanLoc_ != BeanLocation::None) {
+        const Kinetics& k = beans_.kinetics();
+        v.beans.reserve(beans_.parcels().size());
+        for (const auto& p : beans_.parcels()) {
+            VisualBean b;
+            double rgb[3];
+            BeanBatch::colorFor(p, beans_.spec(), k, rgb);
+            for (int i = 0; i < 3; ++i) b.rgb[i] = static_cast<float>(rgb[i]);
+            b.size_mm = static_cast<float>(p.d * 1000.0);
+            b.oil = static_cast<float>(p.oil);
+            b.temp_C = static_cast<float>(p.T_s);
+            b.count = static_cast<float>(p.count);
+            b.exposure = static_cast<float>(exposure(p, 0.3, 0.05));
+            b.cracked = static_cast<float>(p.fc_frac);
+            b.scorch = static_cast<float>(clamp01(p.scorch));
+            v.beans.push_back(b);
+        }
+    }
+    return v;
+}
+
+RoastReport Simulation::report() const {
+    RoastReport r;
+    if (chargeT_ < 0 || beanLoc_ == BeanLocation::None) return r;
+    r.valid = true;
+    r.roaster = roaster_.name;
+    r.bean = bean_.name;
+    BeanSummary s = beans_.summary();
+    r.batch_g = batchG_;
+    r.out_g = s.mass_g;
+    r.weight_loss_pct = s.weight_loss_pct;
+    r.moisture_pct = s.moisture_pct;
+    r.agtron_whole = s.agtron_whole;
+    r.agtron_ground = s.agtron_ground;
+    r.agtron_sd = s.agtron_sd;
+    r.roast_level = roastLevelName(s.agtron_ground);
+    r.scorch_pct = s.scorch_frac * 100.0;
+    r.tipping_pct = s.tipping_frac * 100.0;
+    r.ejected_pct = initialBeans_ > 0 ? 100.0 * (1.0 - s.beans / initialBeans_) : 0;
+
+    for (const auto& e : events_) {
+        if (e.t_session < chargeT_ - 1e-6) continue;
+        if (e.type == "TP" && r.tp_s < 0) { r.tp_s = e.t_roast; r.tp_bt = e.bt; }
+        else if (e.type == "DRY" && r.dry_s < 0) r.dry_s = e.t_roast;
+        else if (e.type == "FCs" && r.fcs_s < 0) { r.fcs_s = e.t_roast; r.fcs_bt = e.bt; }
+        else if (e.type == "FCe" && r.fce_s < 0) r.fce_s = e.t_roast;
+        else if (e.type == "SCs" && r.scs_s < 0) r.scs_s = e.t_roast;
+        else if (e.type == "DROP" && r.drop_s < 0) { r.drop_s = e.t_roast; r.drop_bt = e.bt; }
+    }
+    double end = r.drop_s >= 0 ? r.drop_s : (t_ - chargeT_);
+    if (r.fcs_s >= 0) {
+        r.dev_time_s = std::max(0.0, end - r.fcs_s);
+        r.dtr_pct = end > 0 ? 100.0 * r.dev_time_s / end : 0;
+    }
+
+    // RoR analysis from the 1 Hz history.
+    double minRorAfterFc = 1e9, lowRun = 0, maxLowRun = 0;
+    for (const auto& h : history_) {
+        if (h.t_roast < 0 || h.t_roast > end) continue;
+        if (r.tp_s >= 0 && h.t_roast > r.tp_s + 10) r.max_ror = std::max(r.max_ror, static_cast<double>(h.ror_bt));
+        if (r.fcs_s >= 0 && std::fabs(h.t_roast - r.fcs_s) < 0.75) r.ror_at_fcs = h.ror_bt;
+        if (std::fabs(h.t_roast - end) < 1.0) r.ror_at_drop = h.ror_bt;
+        if (r.fcs_s >= 0 && h.t_roast >= r.fcs_s) {
+            minRorAfterFc = std::min(minRorAfterFc, static_cast<double>(h.ror_bt));
+            if (h.ror_bt < 1.0) {
+                lowRun += 1.0;
+                maxLowRun = std::max(maxLowRun, lowRun);
+            } else {
+                lowRun = 0;
+            }
+        }
+    }
+    if (r.fcs_s >= 0) {
+        r.baked = maxLowRun >= 45 || (r.dev_time_s > 300 && r.ror_at_drop < 3.0);
+        r.crashed = r.ror_at_fcs > 6 && minRorAfterFc < 0.35 * r.ror_at_fcs;
+        r.flicked = minRorAfterFc < 1e8 && r.ror_at_drop > minRorAfterFc + 3.0 && r.dev_time_s > 30;
+    }
+    r.underdeveloped = r.fcs_s < 0 || r.dtr_pct < 12.0 || (s.agtron_ground - s.agtron_whole) > 14.0;
+
+    auto note = [&](const std::string& n) { r.notes.push_back(n); };
+    if (r.fcs_s < 0) note("Dropped before first crack: expect grassy, sour, underdeveloped cup.");
+    else if (r.dtr_pct < 12) note("Very short development after first crack (DTR < 12%).");
+    if (r.dtr_pct > 28) note("Long development (DTR > 28%): roasty, flattened acidity.");
+    if (r.baked) note("RoR stalled after first crack: risk of baked, bready flavours.");
+    if (r.crashed) note("RoR crashed after first crack.");
+    if (r.flicked) note("RoR flicked up before drop.");
+    if (r.scorch_pct > 5) note("Scorching on " + json::formatNumber(r.scorch_pct, 0) + "% of beans (contact surfaces too hot / poor agitation).");
+    if (r.tipping_pct > 5) note("Tipping on " + json::formatNumber(r.tipping_pct, 0) + "% of beans (too much heat while beans were wet).");
+    if (r.agtron_sd > 6) note("Uneven roast: colour spread " + json::formatNumber(r.agtron_sd, 1) + " Agtron points.");
+    if (s.agtron_ground - s.agtron_whole > 12) note("Core much lighter than surface: likely underdeveloped inside.");
+    if (r.ejected_pct > 0.5) note(json::formatNumber(r.ejected_pct, 1) + "% of beans were blown out of the chamber.");
+    if (s.sc_frac > 0.5) note("Well into second crack: oily, bittersweet, origin character fading.");
+    if (r.notes.empty()) note("Clean, even roast.");
+    return r;
+}
+
+json::Value RoastReport::toJson() const {
+    json::Value v = json::Value::object();
+    v["valid"] = valid;
+    if (!valid) return v;
+    auto num = [](double x, int d) {
+        if (!std::isfinite(x)) return json::Value();
+        double p = std::pow(10.0, d);
+        return json::Value(std::round(x * p) / p);
+    };
+    v["roaster"] = roaster;
+    v["bean"] = bean;
+    v["batch_g"] = num(batch_g, 1);
+    v["out_g"] = num(out_g, 1);
+    v["weight_loss_pct"] = num(weight_loss_pct, 2);
+    v["moisture_pct"] = num(moisture_pct, 2);
+    v["tp_s"] = num(tp_s, 0);
+    v["tp_bt"] = num(tp_bt, 1);
+    v["dry_s"] = num(dry_s, 0);
+    v["fcs_s"] = num(fcs_s, 0);
+    v["fcs_bt"] = num(fcs_bt, 1);
+    v["fce_s"] = num(fce_s, 0);
+    v["scs_s"] = num(scs_s, 0);
+    v["drop_s"] = num(drop_s, 0);
+    v["drop_bt"] = num(drop_bt, 1);
+    v["dev_time_s"] = num(dev_time_s, 0);
+    v["dtr_pct"] = num(dtr_pct, 1);
+    v["agtron_whole"] = num(agtron_whole, 1);
+    v["agtron_ground"] = num(agtron_ground, 1);
+    v["agtron_sd"] = num(agtron_sd, 1);
+    v["roast_level"] = roast_level;
+    v["max_ror"] = num(max_ror, 1);
+    v["ror_at_fcs"] = num(ror_at_fcs, 1);
+    v["ror_at_drop"] = num(ror_at_drop, 1);
+    v["scorch_pct"] = num(scorch_pct, 1);
+    v["tipping_pct"] = num(tipping_pct, 1);
+    v["ejected_pct"] = num(ejected_pct, 2);
+    v["baked"] = baked;
+    v["crashed"] = crashed;
+    v["flicked"] = flicked;
+    v["underdeveloped"] = underdeveloped;
+    json::Value n = json::Value::array();
+    for (const auto& s : notes) n.push(s);
+    v["notes"] = n;
+    return v;
+}
+
+}  // namespace roastsim

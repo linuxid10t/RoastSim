@@ -1,0 +1,26 @@
+{
+  "id": "popper_stock",
+  "name": "Popcorn popper (stock, on a variac)",
+  "description": "Unmodified hot-air popcorn popper. Heater and fan motor share one circuit, so the only control is the supply voltage (a variac). A bimetal thermostat cycles the heater when the inlet air gets too hot, and a one-shot thermal fuse protects it.",
+  "kind": "fluid_bed",
+  "batch": { "default_g": 90, "min_g": 60, "max_g": 120 },
+  "controls": [
+    { "id": "voltage", "label": "Variac", "default": 100, "min": 0, "max": 110 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 5, "tau_bean_s": 5.0, "noise_sd": 0.2 },
+    { "id": "ET", "label": "Inlet air", "location": "inlet_air", "tau_air_s": 3, "noise_sd": 0.25 }
+  ],
+  "fluid_bed": {
+    "wiring": "stock",
+    "heater_W": 1400, "nominal_V": 120,
+    "element_C": 40, "element_eff": 0.9, "element_loss_UA": 0.4,
+    "fan_max_flow": 0.0062, "fan_tau": 0.6, "stock_stall_frac": 0.45,
+    "wall_C": 300, "wall_UA_in": 1.4, "wall_UA_out": 1.2,
+    "h_ref": 24, "fluidize_flow_per_kg": 0.05, "eject_agitation": 2.6,
+    "unevenness": 0.10,
+    "thermostat": true, "thermostat_open_C": 245, "thermostat_close_C": 225,
+    "fuse_C": 300, "fuse_hold_s": 4,
+    "chamber_diameter_m": 0.075, "chamber_height_m": 0.14
+  }
+}

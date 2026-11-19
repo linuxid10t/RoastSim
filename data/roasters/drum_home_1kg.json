@@ -1,0 +1,26 @@
+{
+  "id": "drum_home_1kg",
+  "name": "Home electric drum, 1 kg (induction)",
+  "description": "Countertop drum roaster heated by an induction coil around a single-wall steel drum. Power, fan and drum speed are adjustable. Best between 250 g and 1 kg; small batches leave the bean probe partly in air.",
+  "kind": "drum",
+  "batch": { "default_g": 500, "min_g": 250, "max_g": 1000 },
+  "controls": [
+    { "id": "heat", "label": "Power", "default": 0 },
+    { "id": "fan",  "label": "Fan", "default": 30 },
+    { "id": "drum", "label": "Drum speed", "default": 60 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 10, "tau_bean_s": 10.0 },
+    { "id": "ET", "label": "Exhaust", "location": "exhaust_air", "tau_air_s": 6 },
+    { "id": "Drum", "label": "Drum (IR)", "location": "wall", "tau_air_s": 1.0, "noise_sd": 0.4, "resolution": 0.5 }
+  ],
+  "drum": {
+    "heat_source": "induction", "heat_max_W": 1800, "heat_tau": 0.6, "efficiency": 0.9,
+    "frac_drum": 1.0, "frac_air": 0.0, "nominal_V": 120,
+    "drum_mass_kg": 4.5, "drum_cp": 480, "drum_diameter_m": 0.20, "drum_length_m": 0.26,
+    "double_wall": false, "loss_UA": 1.2,
+    "airflow_max": 0.007, "airflow_min_frac": 0.15, "fan_tau": 1.5,
+    "h_air_ref": 10, "wall_air_UA": 8.0, "h_contact": 220, "emissivity": 0.75,
+    "rpm_max": 80, "unevenness": 0.03, "bt_probe_full_kg": 0.45
+  }
+}

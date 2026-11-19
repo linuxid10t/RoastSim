@@ -1,0 +1,11 @@
+{
+  "roaster": "popper_modded", "bean": "colombia_washed", "batch_g": 100, "seed": 1, "max_s": 1500,
+  "actions": [
+    { "at": 0, "set": { "heat": 100, "fan": 85 } },
+    { "at": 30, "charge": true },
+    { "bt_ge": 170, "set": { "fan": 70 } },
+    { "event": "FCs", "delay": 0, "set": { "heat": 70 } },
+    { "event": "FCs", "delay": 75, "drop": true },
+    { "event": "DROP", "delay": 0, "set": { "heat": 0, "fan": 100 } }
+  ]
+}

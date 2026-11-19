@@ -1,0 +1,25 @@
+{
+  "id": "stir_pan",
+  "name": "Stir-arm pan roaster (1200 W)",
+  "description": "Electric nonstick pan with a rotating stir arm under a vented dome and a small chaff fan. Heat is mostly conducted from the pan, so the stir arm matters: stop it and the bottom beans scorch. Chaff stays in the pan and smokes.",
+  "kind": "stir_pan",
+  "batch": { "default_g": 200, "min_g": 100, "max_g": 300 },
+  "controls": [
+    { "id": "heat", "label": "Heater", "default": 0 },
+    { "id": "stir", "label": "Stir arm", "default": 70 },
+    { "id": "fan",  "label": "Dome fan", "default": 30 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Bean temp", "location": "bean_mass", "tau_air_s": 8, "tau_bean_s": 8.0 },
+    { "id": "ET", "label": "Pan", "location": "wall", "tau_air_s": 2.0 },
+    { "id": "Dome", "label": "Dome air", "location": "chamber_air", "tau_air_s": 6 }
+  ],
+  "stir_pan": {
+    "heater_W": 1200, "nominal_V": 120,
+    "pan_C": 650, "pan_loss_UA": 1.4, "pan_diameter_m": 0.24,
+    "thermostat": true, "thermostat_open_C": 275, "thermostat_close_C": 255,
+    "h_contact": 170, "h_dome": 10, "pan_air_UA": 3.0, "dome_vent_UA": 1.2, "dome_loss_UA": 1.0,
+    "fan_max_flow": 0.004, "stir_rpm_max": 12, "unevenness": 0.06,
+    "bt_probe_full_g": 150, "dome_height_m": 0.12
+  }
+}
