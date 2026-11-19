@@ -1,10 +1,12 @@
 // Service tests: a live Host on loopback, spoken to the way Artisan does.
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <thread>
 
 #include "../service/src/internal.hpp"
 #include "../service/src/sha1.hpp"
+#include "roastsim/audio.hpp"
 #include "roastsim/host.hpp"
 #include "roastsim/platform.hpp"
 #include "roastsim/roastsim.h"
@@ -306,6 +308,51 @@ TEST(tc4_protocol) {
     CHECK_RANGE(std::atof(f.c_str()), 68, 75);  // 22 C ambient in F
     host->setUnits('C');
     host->stop();
+}
+
+TEST(sound_follows_the_machine) {
+    HostConfig cfg;
+    cfg.data_dir = rstest::dataDir();
+    cfg.http_enabled = cfg.modbus_enabled = false;
+    cfg.roaster = "popper_modded";
+    cfg.seed = 5;
+    Host host(cfg);
+    std::string err;
+    CHECK(host.start(&err));
+    json::Value p = json::Value::object();
+    p["cmd"] = "pause";
+    p["value"] = true;
+    host.command(p, "test");
+    AudioSynth synth(host, 22050);
+    std::vector<float> buf(22050);
+    auto rms = [&](double simSeconds) {
+        json::Value s = json::Value::object();
+        s["cmd"] = "step";
+        s["seconds"] = simSeconds;
+        host.command(s, "test");
+        synth.render(buf.data(), static_cast<int>(buf.size()));
+        double sum = 0, peak = 0;
+        for (float v : buf) {
+            sum += v * v;
+            peak = std::max(peak, static_cast<double>(std::fabs(v)));
+        }
+        CHECK(peak <= 1.0);
+        return std::sqrt(sum / buf.size());
+    };
+    host.setControl(Control::Heat, 0, "test");
+    host.setControl(Control::Fan, 0, "test");
+    rms(3);
+    double off = rms(1);
+    host.setControl(Control::Fan, 90, "test");
+    rms(3);
+    double fan = rms(1);
+    CHECK(off < 0.005);   // machine off: silence
+    CHECK(fan > 0.03);    // blower running: clearly audible
+    AudioMix m;
+    m.master = 0;
+    synth.setMix(m);
+    CHECK(rms(1) < 1e-6);
+    host.stop();
 }
 
 TEST(c_api) {

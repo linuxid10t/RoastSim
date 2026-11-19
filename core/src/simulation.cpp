@@ -85,6 +85,15 @@ void Simulation::addEvent(const std::string& type, const std::string& origin, co
     if (m >= 0) marked_[m] = true;
 }
 
+std::vector<CrackEvent> Simulation::cracksSince(std::uint64_t seq, std::size_t max) const {
+    std::vector<CrackEvent> out;
+    // cracks_ is ordered by seq; skip the old ones quickly from the back.
+    std::size_t i = cracks_.size();
+    while (i > 0 && cracks_[i - 1].seq > seq) --i;
+    for (; i < cracks_.size() && out.size() < max; ++i) out.push_back(cracks_[i]);
+    return out;
+}
+
 std::vector<SimEvent> Simulation::eventsSince(std::uint64_t seq) const {
     std::vector<SimEvent> out;
     for (const auto& e : events_)
@@ -178,6 +187,7 @@ void Simulation::coldReset() {
     lastAlarms_ = 0;
     smoke_ = chaffRate_ = organicRate_ = 0;
     popsFc_ = popsSc_ = 0;
+    cracks_.clear();
     nextHistory_ = nextRorSample_ = t_;
     for (int i = 0; i < kControlCount; ++i) actual_[i] = target_[i];
 }
@@ -277,6 +287,22 @@ void Simulation::stepOnce(double dt) {
     if (beanLoc_ != BeanLocation::None) res = beans_.integrate(dt, rng_);
     popsFc_ += static_cast<std::uint64_t>(res.pops_fc);
     popsSc_ += static_cast<std::uint64_t>(res.pops_sc);
+    for (const CrackPop& c : res.cracks) {
+        int n = std::min(c.count, 200);  // a huge batch at peak crack is a roar; cap the bookkeeping
+        for (int i = 0; i < n; ++i) {
+            CrackEvent e;
+            e.seq = ++crackSeq_;
+            e.t = t_ + rng_.uniform() * dt;
+            e.second = c.second;
+            e.size_mm = c.size_mm;
+            e.hardness = c.hardness;
+            e.moisture = c.moisture;
+            e.loudness = c.loudness;
+            e.where = beanLoc_;
+            cracks_.push_back(e);
+        }
+    }
+    while (cracks_.size() > 8192) cracks_.pop_front();
 
     double a = 1.0 - std::exp(-dt / 3.0);
     organicRate_ += (res.organic_loss_kg / dt - organicRate_) * a;

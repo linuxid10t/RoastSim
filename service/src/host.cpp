@@ -192,6 +192,26 @@ std::vector<HistorySample> Host::historySince(std::uint64_t index, std::uint64_t
     return out;
 }
 
+std::vector<CrackEvent> Host::cracksSince(std::uint64_t seq, std::size_t max) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sim_.cracksSince(seq, max);
+}
+
+std::uint64_t Host::crackSeq() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sim_.crackSeq();
+}
+
+RoasterDef Host::roasterDef() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sim_.roaster();
+}
+
+BeanSpec Host::beanSpec() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sim_.bean();
+}
+
 std::uint64_t Host::historyEnd() const {
     std::lock_guard<std::mutex> lk(mu_);
     return sim_.historyBase() + sim_.history().size();

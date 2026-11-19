@@ -37,14 +37,14 @@ namespace {
 enum : int {
     IDC_ROASTER = 101, IDC_BEAN, IDC_LOAD, IDC_BATCH, IDC_CHARGE, IDC_DROP, IDC_PREHEAT_T, IDC_PREHEAT,
     IDC_RESET, IDC_REPAIR, IDC_SPEED, IDC_SOUND, IDC_REPORT, IDC_MARKFC, IDC_AMBIENT, IDC_VOLTS, IDC_ALT,
-    IDC_ENVAPPLY, IDC_READOUT, IDC_STATUS, IDC_DESC, IDC_ENVLABEL, IDC_ENVL2, IDC_ENVL3,
+    IDC_ENVAPPLY, IDC_READOUT, IDC_STATUS, IDC_DESC, IDC_ENVLABEL, IDC_ENVL2, IDC_ENVL3, IDC_VOLUME,
     IDC_SLIDER0 = 200, IDC_SLABEL0 = 220, IDC_SVALUE0 = 240,
     IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY,
     IDM_MARK_DRY = 1020, IDM_MARK_FCS, IDM_MARK_FCE, IDM_MARK_SCS, IDM_MARK_SCE,
     IDM_FAULT_BT_OPEN = 1040, IDM_FAULT_BT_SPIKES, IDM_FAULT_BT_DRIFT, IDM_FAULT_BT_NOISY, IDM_FAULT_ET_OPEN,
     IDM_FAULT_CLEAR, IDM_ABOUT = 1060,
 };
-enum : UINT_PTR { TIMER_UI = 1, TIMER_SOUND = 2 };
+enum : UINT_PTR { TIMER_UI = 1 };
 
 constexpr int kSliderCount = 5;  // heat, fan, drum, stir, voltage
 const int kSliderControls[kSliderCount] = {RS_CTL_HEAT, RS_CTL_FAN, RS_CTL_DRUM, RS_CTL_STIR, RS_CTL_VOLTAGE};
@@ -82,40 +82,6 @@ std::wstring mmss(double s) {
     return fmt(L"%s%02d:%02d", s < 0 ? L"-" : L"", t / 60, t % 60);
 }
 
-// Synthesised crack sounds (no audio files needed).
-std::vector<char> makeClick(bool second, unsigned seed) {
-    const int rate = 22050;
-    const int n = second ? rate * 10 / 1000 : rate * 22 / 1000;
-    std::vector<int16_t> pcm(static_cast<size_t>(n));
-    unsigned x = seed * 2654435761u + 12345u;
-    double prev = 0;
-    for (int i = 0; i < n; ++i) {
-        x = x * 1664525u + 1013904223u;
-        double noise = ((x >> 8) & 0xFFFF) / 32768.0 - 1.0;
-        double env = std::exp(-static_cast<double>(i) / (n * (second ? 0.18 : 0.25)));
-        double v = second ? (noise - prev) * 0.5 : (noise + prev) * 0.5;  // high-pass vs low-pass
-        prev = noise;
-        pcm[static_cast<size_t>(i)] = static_cast<int16_t>(v * env * (second ? 9000 : 16000));
-    }
-    std::vector<char> wav(44 + pcm.size() * 2);
-    auto put32 = [&](size_t o, uint32_t v) { std::memcpy(&wav[o], &v, 4); };
-    auto put16 = [&](size_t o, uint16_t v) { std::memcpy(&wav[o], &v, 2); };
-    std::memcpy(&wav[0], "RIFF", 4);
-    put32(4, static_cast<uint32_t>(wav.size() - 8));
-    std::memcpy(&wav[8], "WAVEfmt ", 8);
-    put32(16, 16);
-    put16(20, 1);
-    put16(22, 1);
-    put32(24, rate);
-    put32(28, rate * 2);
-    put16(32, 2);
-    put16(34, 16);
-    std::memcpy(&wav[36], "data", 4);
-    put32(40, static_cast<uint32_t>(pcm.size() * 2));
-    std::memcpy(&wav[44], pcm.data(), pcm.size() * 2);
-    return wav;
-}
-
 // ---------------------------------------------------------------- app state
 struct EventMark {
     std::string type, detail;
@@ -146,9 +112,8 @@ struct App {
     int lastPhase = -1;
     std::vector<EventMark> events;
     uint64_t eventSeq = 0;
-    uint64_t lastPopsFc = 0, lastPopsSc = 0;
-    std::vector<char> clickFc[3], clickSc[3];
-    int clickIdx = 0;
+    rs_audio* audio = nullptr;  // procedural roaster sound (docs/SOUND.md)
+    HWND volSlider = nullptr;
     bool reportShownForSeq = false;
 
     std::vector<rs_visual_bean> vbeans;
@@ -157,6 +122,7 @@ struct App {
     int leftWidth = 380;
 };
 App g;
+void applySound();
 
 int S(int v) { return static_cast<int>(std::lround(v * g.dpi)); }
 
@@ -289,6 +255,7 @@ void layout() {
     y += rowH + gap;
     place(g.speedCombo, pad, y, S(110), S(300));
     place(GetDlgItem(g.wnd, IDC_REPORT), pad + S(116), y, S(110), rowH);
+    place(g.volSlider, pad + S(232), y, w - S(232), rowH);
     y += rowH + gap;
     // environment
     int ew = (w - S(80) - 3 * gap) / 3;
@@ -773,7 +740,10 @@ void onCommand(int id, int code) {
             break;
         case IDM_EXIT: DestroyWindow(g.wnd); break;
         default:
-            if (id == IDC_SOUND) break;
+            if (id == IDC_SOUND) {
+                if (code == BN_CLICKED) applySound();
+                break;
+            }
             if (id == 0x7F1) break;
             if (id == static_cast<int>(GetDlgCtrlID(g.coolCheck)) && code == BN_CLICKED) {
                 bool on = SendMessageW(g.coolCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -792,19 +762,20 @@ void onSlider(HWND slider, int code) {
     }
 }
 
-void playPops() {
-    rs_state s{};
-    s.struct_size = sizeof s;
-    if (!rs_host_get_state(g.host, &s)) return;
-    bool sound = SendMessageW(g.soundCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    bool fc = s.pops_fc > g.lastPopsFc, sc = s.pops_sc > g.lastPopsSc;
-    if (s.pops_fc < g.lastPopsFc || s.pops_sc < g.lastPopsSc) fc = sc = false;  // new roast
-    g.lastPopsFc = s.pops_fc;
-    g.lastPopsSc = s.pops_sc;
-    if (!sound || (!fc && !sc)) return;
-    g.clickIdx = (g.clickIdx + 1) % 3;
-    const std::vector<char>& w = sc && (!fc || (g.clickIdx & 1)) ? g.clickSc[g.clickIdx] : g.clickFc[g.clickIdx];
-    PlaySoundW(reinterpret_cast<LPCWSTR>(w.data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+void applySound() {
+    if (!g.audio) return;
+    bool on = SendMessageW(g.soundCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    float vol = static_cast<float>(SendMessageW(g.volSlider, TBM_GETPOS, 0, 0)) / 100.0f;
+    rs_audio_set_mix(g.audio, vol, 1.0f, 1.0f);
+    if (!on) {
+        rs_audio_pause(g.audio);
+        return;
+    }
+    char err[256] = {0};
+    if (!rs_audio_play(g.audio, err, sizeof err)) {
+        SendMessageW(g.soundCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        MessageBoxA(g.wnd, err, "Sound", MB_ICONWARNING);
+    }
 }
 
 // ---------------------------------------------------------------- window
@@ -828,8 +799,11 @@ void createWidgets() {
         g.sliderValues[i] = mk(L"STATIC", L"0%", SS_RIGHT, IDC_SVALUE0 + i);
     }
     g.coolCheck = mk(L"BUTTON", L"Cooling tray fan", BS_AUTOCHECKBOX | WS_TABSTOP, 0x7F2);
-    g.soundCheck = mk(L"BUTTON", L"Crack sounds", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_SOUND);
+    g.soundCheck = mk(L"BUTTON", L"Sound", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_SOUND);
     SendMessageW(g.soundCheck, BM_SETCHECK, BST_CHECKED, 0);
+    g.volSlider = mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, IDC_VOLUME);
+    SendMessageW(g.volSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+    SendMessageW(g.volSlider, TBM_SETPOS, TRUE, 70);
     g.speedCombo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, IDC_SPEED);
     for (const wchar_t* s : {L"Pause", L"1x real time", L"2x", L"5x", L"10x", L"30x", L"60x"})
         SendMessageW(g.speedCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
@@ -900,7 +874,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             applyRoasterDef();
             layout();
             SetTimer(h, TIMER_UI, 200, nullptr);
-            SetTimer(h, TIMER_SOUND, 60, nullptr);
+            applySound();
             return 0;
         }
         case WM_SIZE: layout(); return 0;
@@ -912,10 +886,10 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_TIMER:
             if (wp == TIMER_UI) refresh();
-            else if (wp == TIMER_SOUND) playPops();
             return 0;
         case WM_HSCROLL:
-            if (lp) onSlider(reinterpret_cast<HWND>(lp), LOWORD(wp));
+            if (reinterpret_cast<HWND>(lp) == g.volSlider) applySound();
+            else if (lp) onSlider(reinterpret_cast<HWND>(lp), LOWORD(wp));
             return 0;
         case WM_COMMAND: onCommand(LOWORD(wp), HIWORD(wp)); return 0;
         case WM_ERASEBKGND: return 1;
@@ -928,7 +902,6 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             KillTimer(h, TIMER_UI);
-            KillTimer(h, TIMER_SOUND);
             PostQuitMessage(0);
             return 0;
     }
@@ -954,10 +927,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     sm.lfHeight = sm.lfHeight * 9 / 10;
     g.small = CreateFontIndirectW(&sm);
     g.mono = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
-    for (int i = 0; i < 3; ++i) {
-        g.clickFc[i] = makeClick(false, static_cast<unsigned>(i + 1));
-        g.clickSc[i] = makeClick(true, static_cast<unsigned>(i + 11));
-    }
 
     // Optional roastsim.json next to the exe configures ports/bind address/etc.
     std::string cfgText;
@@ -969,6 +938,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         MessageBoxA(nullptr, err, "RoastSim failed to start", MB_ICONERROR);
         return 1;
     }
+    g.audio = rs_audio_create(g.host, 44100);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof wc;
@@ -991,6 +961,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
             DispatchMessageW(&m);
         }
     }
+    rs_audio_destroy(g.audio);
     rs_host_stop(g.host);
     rs_host_destroy(g.host);
     return 0;

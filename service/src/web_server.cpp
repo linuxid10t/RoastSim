@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "internal.hpp"
+#include "roastsim/audio.hpp"
 #include "sha1.hpp"
 
 namespace fs = std::filesystem;
@@ -40,6 +41,11 @@ struct Conn {
     double lastPush = 0;
     std::uint64_t eventSeq = 0;
     std::uint64_t historyNext = 0;
+    // Streamed sound (binary PCM16 mono frames), rendered by this connection's own synth.
+    std::unique_ptr<AudioSynth> audio;
+    double audioStart = 0;
+    std::uint64_t audioSent = 0;
+    std::vector<float> audioBuf;
 };
 
 double nowSeconds() {
@@ -190,7 +196,30 @@ void NetServer::Impl::handleWsMessage(Conn& c, const std::string& text) {
         }
         std::string cmd = msg.get("cmd", "");
         json::Value reply;
-        if (cmd == "subscribe") {
+        if (cmd == "audio") {
+            // {"cmd":"audio","value":true,"rate":24000} starts the sound stream; false stops it.
+            reply = json::Value::object();
+            if (msg.getBool("value", true)) {
+                int rate = static_cast<int>(clampd(msg.get("rate", 24000.0), 8000.0, 48000.0));
+                c.audio = std::make_unique<AudioSynth>(host, rate);
+                c.audioStart = nowSeconds();
+                c.audioSent = 0;
+                reply["rate"] = rate;
+            } else {
+                c.audio.reset();
+            }
+            reply["ok"] = true;
+        } else if (cmd == "audio_mix") {
+            if (c.audio) {
+                AudioMix m = c.audio->mix();
+                m.master = static_cast<float>(msg.get("master", m.master));
+                m.machine = static_cast<float>(msg.get("machine", m.machine));
+                m.cracks = static_cast<float>(msg.get("cracks", m.cracks));
+                c.audio->setMix(m);
+            }
+            reply = json::Value::object();
+            reply["ok"] = true;
+        } else if (cmd == "subscribe") {
             c.subscribed = msg.getBool("value", true);
             c.eventSeq = static_cast<std::uint64_t>(msg.get("event_seq", 0.0));
             c.historyNext = static_cast<std::uint64_t>(msg.get("history_from", 0.0));
@@ -344,6 +373,27 @@ void NetServer::Impl::handleHttp(Conn& c) {
 
 void NetServer::Impl::periodic(Conn& c, double now) {
     if (c.kind != ConnKind::WebSocket) return;
+    if (c.audio) {
+        // Keep ~150 ms rendered ahead of real time; the browser schedules the chunks.
+        const int rate = c.audio->sampleRate();
+        double target = (now - c.audioStart + 0.15) * rate;
+        if (target - static_cast<double>(c.audioSent) > rate)  // stalled for a second: skip ahead
+            c.audioSent = static_cast<std::uint64_t>(target) - static_cast<std::uint64_t>(rate / 4);
+        int frames = static_cast<int>(target - static_cast<double>(c.audioSent));
+        if (frames >= rate / 50 && c.out.size() < 256 * 1024) {
+            c.audioBuf.resize(static_cast<std::size_t>(frames));
+            c.audio->render(c.audioBuf.data(), frames);
+            std::string pcm(static_cast<std::size_t>(frames) * 2, '\0');
+            for (int i = 0; i < frames; ++i) {
+                float v = std::max(-1.0f, std::min(1.0f, c.audioBuf[static_cast<std::size_t>(i)]));
+                auto s = static_cast<std::int16_t>(v * 32767.0f);
+                pcm[static_cast<std::size_t>(i) * 2] = static_cast<char>(s & 0xFF);
+                pcm[static_cast<std::size_t>(i) * 2 + 1] = static_cast<char>((s >> 8) & 0xFF);
+            }
+            c.out += wsFrame(pcm, 0x2);
+            c.audioSent += static_cast<std::uint64_t>(frames);
+        }
+    }
     // Events: UI subscribers get them all; Artisan gets CHARGE/DROP and crack marks.
     if (c.subscribed || c.artisan) {
         auto evs = host.eventsSince(c.eventSeq);

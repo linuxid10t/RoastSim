@@ -12,22 +12,24 @@ let history = [];          // rows: arrays in COLS order
 let events = [];
 let lastPhase = null;
 let dragging = new Set();
-let lastPops = { fc: 0, sc: 0 };
-let audio = null;
+let snd = null;           // { ctx, gain, rate, next } while sound is on
 
 // ---------------------------------------------------------------- transport
 function connect() {
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
   ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
   ws.onopen = async () => {
     setPill('conn', true, 'online');
     history = []; events = [];
     await loadLists();
     await refreshDef();
     send({ cmd: 'subscribe', history_from: 0, event_seq: 0 });
+    if (snd) send({ cmd: 'audio', value: true, rate: snd.rate });  // resume sound after a reconnect
   };
   ws.onclose = () => { setPill('conn', false, 'offline'); setTimeout(connect, 1500); };
   ws.onmessage = (m) => {
+    if (m.data instanceof ArrayBuffer) { playPcm(m.data); return; }
     let msg;
     try { msg = JSON.parse(m.data); } catch { return; }
     if (msg.req !== undefined && pending.has(msg.req)) { pending.get(msg.req)(msg); pending.delete(msg.req); return; }
@@ -131,7 +133,6 @@ function onState(s) {
   $('speed').value = s.paused ? '0' : String(s.time_scale);
   $('alarms').innerHTML = s.alarms.map(a => `<span>${a.replace(/_/g, ' ')}</span>`).join('');
   renderTables(s);
-  pops(s);
   drawChart();
 }
 
@@ -168,27 +169,43 @@ function renderTables(s) {
   drawBeans();
 }
 
-// ---------------------------------------------------------------- sounds
-function pops(s) {
-  const fc = s.pops_fc - lastPops.fc, sc = s.pops_sc - lastPops.sc;
-  lastPops = { fc: s.pops_fc, sc: s.pops_sc };
-  if (!$('sound').checked || (fc <= 0 && sc <= 0)) return;
-  if (!audio) { try { audio = new AudioContext(); } catch { return; } }
-  const n = Math.min(6, Math.max(0, fc) + Math.max(0, sc));
-  for (let i = 0; i < n; i++) click(i < fc ? 'fc' : 'sc', Math.random() * 0.24);
+// ---------------------------------------------------------------- sound
+// The simulator renders the roaster's sound (the same synthesizer the native
+// app plays) and streams it as 16-bit mono PCM in binary WebSocket frames.
+// Here we just schedule those chunks back to back with a small jitter buffer.
+async function setSound(on) {
+  if (on && !snd) {
+    let ctx;
+    try { ctx = new AudioContext({ sampleRate: 24000 }); } catch { ctx = new AudioContext(); }
+    const gain = ctx.createGain();
+    gain.gain.value = +$('volume').value / 100;
+    gain.connect(ctx.destination);
+    snd = { ctx, gain, rate: 24000, next: 0 };
+    const r = await send({ cmd: 'audio', value: true, rate: snd.rate });
+    if (!r.ok) { alert(r.error || 'sound unavailable'); setSound(false); $('sound').checked = false; }
+  } else if (!on && snd) {
+    send({ cmd: 'audio', value: false });
+    snd.ctx.close();
+    snd = null;
+  }
 }
 
-function click(kind, delay) {
-  const ctx = audio, len = Math.floor(ctx.sampleRate * (kind === 'fc' ? 0.025 : 0.012));
-  const buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
-  let prev = 0;
-  for (let i = 0; i < len; i++) {
-    const n = Math.random() * 2 - 1, env = Math.exp(-i / (len * 0.22));
-    d[i] = (kind === 'fc' ? (n + prev) / 2 : (n - prev) / 2) * env * (kind === 'fc' ? 0.8 : 0.45);
-    prev = n;
-  }
-  const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
-  src.start(ctx.currentTime + delay);
+function playPcm(data) {
+  if (!snd) return;
+  const pcm = new Int16Array(data);
+  const buf = snd.ctx.createBuffer(1, pcm.length, snd.rate);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+  const now = snd.ctx.currentTime;
+  // Keep ~0.1-0.3 s of audio queued: drop a chunk if we are too far ahead
+  // (keeps cracks in sync with the screen), restart the queue after a gap.
+  if (snd.next > now + 0.3) return;
+  if (snd.next < now + 0.02) snd.next = now + 0.08;
+  const src = snd.ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(snd.gain);
+  src.start(snd.next);
+  snd.next += buf.duration;
 }
 
 // ---------------------------------------------------------------- drawing
@@ -324,6 +341,7 @@ $('envApply').onclick = () => {
 $('faultApply').onclick = () => act({ cmd: 'fault', probe: $('faultProbe').value, type: $('faultType').value });
 for (const b of document.querySelectorAll('[data-mark]')) b.onclick = () => act({ cmd: 'mark', event: b.dataset.mark });
 window.addEventListener('resize', drawChart);
-document.addEventListener('click', () => { if (audio && audio.state === 'suspended') audio.resume(); });
+$('sound').onchange = (e) => setSound(e.target.checked);
+$('volume').oninput = (e) => { if (snd) snd.gain.gain.value = +e.target.value / 100; };
 
 connect();

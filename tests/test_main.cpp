@@ -194,6 +194,39 @@ TEST(denser_bean_takes_longer_with_bigger_core_lag) {
     CHECK(hard.agtron_ground - hard.agtron_whole > soft.agtron_ground - soft.agtron_whole);
 }
 
+TEST(crack_sounds_depend_on_the_bean) {
+    // Average the sound attributes of the first 200 cracks for a few coffees.
+    struct Avg { double loud = 0, size = 0; int n = 0; };
+    auto cracks = [](const char* bean) {
+        Simulation sim;
+        sim.setSeed(3);
+        sim.load(*catalog().roaster("popper_modded"), *catalog().bean(bean));
+        sim.setControl(Control::Heat, 100);
+        sim.setControl(Control::Fan, 85);
+        sim.charge(100, "test");
+        Avg a;
+        for (int i = 0; i < 20 * 900 && a.n < 200; ++i) {
+            sim.step(Simulation::kStep);
+            if (sim.crackSeq() >= 200) {
+                for (const auto& c : sim.cracksSince(0, 200)) {
+                    CHECK(!c.second);
+                    a.loud += c.loudness;
+                    a.size += c.size_mm;
+                    ++a.n;
+                }
+            }
+        }
+        if (a.n) { a.loud /= a.n; a.size /= a.n; }
+        return a;
+    };
+    Avg kenya = cracks("kenya_washed"), colombia = cracks("colombia_washed"), ethiopia = cracks("ethiopia_natural"),
+        decaf = cracks("decaf_water_process");
+    CHECK(kenya.n == 200 && decaf.n == 200);
+    CHECK(kenya.loud > colombia.loud);       // dense, wet, big beans pop loudest
+    CHECK(decaf.loud < 0.6 * colombia.loud); // decaf's famously quiet first crack
+    CHECK(kenya.size > ethiopia.size);       // bigger beans -> deeper pops
+}
+
 TEST(probe_open_fault_reads_minus_one) {
     ScenarioResult r = run(R"({"roaster":"popper_modded","seed":1,"max_s":60,
         "actions":[{"at":0,"set":{"heat":50,"fan":80}},{"at":10,"fault":{"probe":"BT","type":"open"}}]})");

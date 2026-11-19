@@ -121,6 +121,23 @@ RS_API int rs_host_get_history(rs_host* h, uint64_t from_index, rs_sample* out, 
 /* Fills info and up to max_beans parcels; returns the number of beans written. */
 RS_API int rs_host_get_visual(rs_host* h, rs_visual_info* info, rs_visual_bean* beans, int max_beans);
 
+/* ---------------------------------------------------------------- sound
+ * Procedural roaster sound (fans, burner, drum, beans, first/second crack),
+ * rendered from the live simulation; see docs/SOUND.md. Either let RoastSim
+ * play it (rs_audio_play: Windows today) or pull samples into your own audio
+ * callback with rs_audio_render (any platform). */
+typedef struct rs_audio rs_audio;
+
+RS_API rs_audio* rs_audio_create(rs_host* h, int sample_rate);
+RS_API void rs_audio_destroy(rs_audio* a);
+/* Mono float samples in [-1, 1]. Call from one thread at a time. */
+RS_API void rs_audio_render(rs_audio* a, float* out, int frames);
+/* Levels 0..1 (master, machine noises, cracks). */
+RS_API void rs_audio_set_mix(rs_audio* a, float master, float machine, float cracks);
+/* Plays through the platform's default output. 1 ok, 0 unsupported/failed (see err). */
+RS_API int rs_audio_play(rs_audio* a, char* err, size_t errlen);
+RS_API void rs_audio_pause(rs_audio* a);
+
 #ifdef __cplusplus
 }
 #endif

@@ -100,7 +100,7 @@ int validateFiles(const std::string& dir, json::Value& out) {
                 if (!c.addBeanJson(text, &err)) issue(name, "error", err);
                 static const char* keys[] = {"id", "name", "origin", "process", "notes", "moisture_pct", "moisture_wb",
                                              "moisture_sd", "density", "bean_mass_mg", "size_rel_sd", "fc_temp", "fc_sd",
-                                             "sc_temp", "sc_sd", "chaff_frac", "kinetics_scale", "bulk_density",
+                                             "sc_temp", "sc_sd", "chaff_frac", "kinetics_scale", "bulk_density", "crack_loudness",
                                              "green_rgb", "kinetics"};
                 for (const auto& k : v.keys()) {
                     bool known = false;

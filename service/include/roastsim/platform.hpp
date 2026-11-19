@@ -61,6 +61,28 @@ private:
     std::string desc_;
 };
 
+// ---------------------------------------------------------------- audio out
+// Plays mono float audio produced by a fill callback on a background thread.
+// Windows: waveOut. Other platforms: start() returns false for now; native
+// shells there (GTK, Haiku BSoundPlayer) can call rs_audio_render() from
+// their own audio callback, and the web UI streams sound on every platform.
+class AudioOutput {
+public:
+    using Fill = void (*)(void* user, float* out, int frames);
+    AudioOutput();
+    ~AudioOutput();
+    AudioOutput(const AudioOutput&) = delete;
+    AudioOutput& operator=(const AudioOutput&) = delete;
+
+    bool start(int sampleRate, Fill fill, void* user, std::string* err);
+    void stop();
+    bool running() const;
+
+private:
+    struct Impl;
+    Impl* impl_;
+};
+
 // ---------------------------------------------------------------- paths
 std::string executableDir();
 // Finds a directory named `name` next to the executable, in the working

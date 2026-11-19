@@ -42,6 +42,8 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `visual` | `max` | render state for 3D/2D views; `beans` as `[r, g, b, size_mm, oil, temp, count, exposure, cracked, scorch]` |
 | `server` | | listener status, connected clients, logger status, config |
 | `subscribe` | `history_from`, `event_seq`, `value` | **WebSocket only**: stream `{"type":"state", … , "history":[…]}` at 4 Hz plus `{"type":"event", …}` messages |
+| `audio` | `value` (bool), `rate` (8000–48000, default 24000) | **WebSocket only**: stream the roaster's sound as binary frames of int16 little-endian mono PCM (see [SOUND.md](SOUND.md)) |
+| `audio_mix` | `master`, `machine`, `cracks` (0–1) | **WebSocket only**: levels for this connection's sound stream |
 
 Event types: `CHARGE`, `TP`, `DRY`, `FCs`, `FCe`, `SCs`, `SCe`, `DROP`, `COOL`, `ALARM` (`detail` = alarm name), `NOTE`.
 

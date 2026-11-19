@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 
+#include "roastsim/audio.hpp"
 #include "roastsim/catalog.hpp"
 #include "roastsim/host.hpp"
 #include "roastsim/platform.hpp"
@@ -42,7 +43,8 @@ void usage() {
         "  --data DIR, --web DIR  resource directories\n"
         "  --script FILE        run a scripted roast as fast as possible, print the report, exit\n"
         "  --list               list roaster and bean presets\n"
-        "  --quiet              no periodic status line\n");
+        "  --quiet              no periodic status line\n"
+        "  --sound              play the roaster sound locally (Windows; elsewhere use the web UI)\n");
 }
 
 void consoleHelp() {
@@ -175,7 +177,7 @@ int runScript(const std::string& path, const std::string& dataDir) {
 int main(int argc, char** argv) {
     HostConfig cfg;
     std::string script;
-    bool list = false, quiet = false;
+    bool list = false, quiet = false, sound = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -206,6 +208,7 @@ int main(int argc, char** argv) {
         else if (a == "--script") script = next();
         else if (a == "--list") list = true;
         else if (a == "--quiet") quiet = true;
+        else if (a == "--sound") sound = true;
         else { std::fprintf(stderr, "unknown option %s (try --help)\n", a.c_str()); return 2; }
     }
     if (cfg.data_dir.empty()) cfg.data_dir = platform::findResourceDir("data");
@@ -236,6 +239,14 @@ int main(int argc, char** argv) {
     if (cfg.http_enabled)
         std::printf("  Open http://%s:%d/ for the control panel\n",
                     cfg.bind_address == "0.0.0.0" ? "localhost" : cfg.bind_address.c_str(), cfg.http_port);
+    AudioSynth synth(host, 44100);
+    platform::AudioOutput speaker;
+    if (sound) {
+        std::string aerr;
+        auto fill = [](void* u, float* out, int n) { static_cast<AudioSynth*>(u)->render(out, n); };
+        if (speaker.start(44100, fill, &synth, &aerr)) std::printf("  Sound: playing on the default output device\n");
+        else std::printf("  Sound: %s\n", aerr.c_str());
+    }
     std::printf("Type 'help' for commands, Ctrl+C to quit.\n");
 
     // Console reader thread (stdin may be closed when run as a service).
@@ -268,6 +279,7 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     }
     std::printf("stopping...\n");
+    speaker.stop();
     host.stop();
     return 0;
 }

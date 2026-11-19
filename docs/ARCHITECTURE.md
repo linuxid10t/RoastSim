@@ -102,6 +102,10 @@ The renderer gets the GL context from the shell. It never creates windows, which
 * Sound: crack counters are already exposed. Add fan and burner loudness from `fan` and `heat`.
 * Optional: per-family geometry details (vane count, screen size) in the roaster JSON under a `"visual"` block. The loader already ignores unknown keys.
 
+## Sound
+
+`AudioSynth` (service layer, portable C++) turns the live simulation into the roaster's sound: machine layers from telemetry, and individual cracks from `Simulation::cracksSince()`, which carry each cracking bean's size, hardness, moisture and loudness. Native shells play it locally or pull samples through `rs_audio_render()`; the web server renders one stream per listening browser. See [SOUND.md](SOUND.md). Crack events are also meant to drive crack particles in the future 3D view.
+
 ## Adding things
 
 * **A roaster:** copy a JSON file in `data/roasters/`. A new *family* means a new `MachineModel` subclass (one `.cpp`) plus a `RoasterKind` value.

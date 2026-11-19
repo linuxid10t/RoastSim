@@ -13,6 +13,8 @@ Artisan connects over **Modbus TCP**, **WebSocket** (Artisan's default dialect, 
 roastsim_win32.exe   native Windows control panel (hosts all servers)
 roastsimd(.exe)      headless simulator + console; same servers; Windows/Linux/Haiku
 roastsim_script      run scripted roasts at full speed (calibration, testing, teaching)
+roastsim_check       validate presets and run reference roasts
+roastsim_sound       render the roaster's sound to a WAV file
 http://localhost:8080/   web control panel (served by either of the above)
 ```
 
@@ -51,6 +53,7 @@ On Linux, port 502 needs privileges. Use `--modbus-port 5020` and set the same p
 * **Environment:** ambient temperature, line voltage and sag (big for poppers), altitude (less air mass), humidity, gas pressure.
 * **Faults:** open/shorted/drifting/spiking probes to test Artisan setups; blow the popper's thermal fuse by choking its airflow, then **Repair**.
 * **Speed:** pause, or run 1–120× when no logger is connected. Artisan connecting locks it to real time.
+* **Sound:** hear the blower, burner and drum, the beans tumbling, and every first and second crack, voiced from each bean's size, hardness and moisture (a dense Kenya pops loud and deep, a decaf barely ticks). Use the **Sound** checkbox in the Win32 app or the web UI, or `roastsimd --sound`. `roastsim_sound` renders WAV files offline. See [docs/SOUND.md](docs/SOUND.md).
 
 ## Testing
 
@@ -58,7 +61,7 @@ On Linux, port 502 needs privileges. Use `--modbus-port 5020` and set the same p
 .\build\roastsim_tests.exe data
 ```
 
-The 21 tests cover physics envelopes for every preset, the density effect, determinism, Modbus framing and registers, the Artisan WebSocket dialect and push messages, HTTP, TC4 commands and the C API.
+The 23 tests cover physics envelopes for every preset, the density effect, crack sounds per bean, the sound engine, determinism, Modbus framing and registers, the Artisan WebSocket dialect and push messages, HTTP, TC4 commands and the C API.
 
 ## Project layout
 
@@ -70,5 +73,5 @@ web/       browser control panel (served by the host)
 data/      roaster and bean presets (JSON; add your own)
 scripts/   scripted calibration roasts
 tests/     test-suite
-docs/      ARCHITECTURE (incl. the 3D plan), ARTISAN_SETUP, API, PHYSICS
+docs/      ARCHITECTURE (incl. the 3D plan), ARTISAN_SETUP, API, PHYSICS, SOUND
 ```

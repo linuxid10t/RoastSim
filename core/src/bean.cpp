@@ -57,6 +57,7 @@ BeanSpec BeanSpec::fromJson(const json::Value& v) {
     s.sc_sd = v.get("sc_sd", s.sc_sd);
     s.chaff_frac = v.get("chaff_frac", s.chaff_frac);
     s.kinetics_scale = v.get("kinetics_scale", s.kinetics_scale);
+    s.crack_loudness = v.get("crack_loudness", s.crack_loudness);
     s.bulk_density = v.get("bulk_density", s.density);  // free-settled density is the pile density
     readColor(v["green_rgb"], s.green_rgb);
     s.kinetics = Kinetics::fromJson(v["kinetics"], Kinetics{});
@@ -77,6 +78,7 @@ json::Value BeanSpec::toJson() const {
     v["sc_temp"] = sc_temp;
     v["chaff_frac"] = chaff_frac;
     v["kinetics_scale"] = kinetics_scale;
+    v["crack_loudness"] = crack_loudness;
     json::Value c = json::Value::array();
     for (double x : green_rgb) c.push(x);
     v["green_rgb"] = c;
@@ -177,13 +179,40 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
         double scT = normalCdf((p.T_c - p.sc_thr) / k.crack_sigma);
         double dfc = std::max(0.0, fcT - p.fc_frac);
         double dsc = std::max(0.0, scT - p.sc_frac);
+        // Each pop carries what it sounds like: the bean's size, hardness and how
+        // much steam is left to burst it (see docs/SOUND.md).
+        const double hardness = spec_.density > 0 ? spec_.density / k.density_ref : 1.0;
+        const double sizeMm = p.d * 1000.0;
         if (dfc > 0) {
             p.fc_frac += dfc;
-            res.pops_fc += rng.poisson(dfc * p.count * k.fc_pops_per_bean);
+            int n = rng.poisson(dfc * p.count * k.fc_pops_per_bean);
+            res.pops_fc += n;
+            if (n > 0) {
+                CrackPop c;
+                c.second = false;
+                c.count = n;
+                c.size_mm = static_cast<float>(sizeMm);
+                c.hardness = static_cast<float>(hardness);
+                c.moisture = static_cast<float>(p.X);
+                c.loudness = static_cast<float>(spec_.crack_loudness * std::pow(hardness, 1.5) *
+                                                clampd(std::sqrt(p.X / 0.06), 0.5, 1.4) * std::sqrt(sizeMm / 7.5));
+                res.cracks.push_back(c);
+            }
         }
         if (dsc > 0) {
             p.sc_frac += dsc;
-            res.pops_sc += rng.poisson(dsc * p.count * k.sc_pops_per_bean);
+            int n = rng.poisson(dsc * p.count * k.sc_pops_per_bean);
+            res.pops_sc += n;
+            if (n > 0) {
+                CrackPop c;
+                c.second = true;
+                c.count = n;
+                c.size_mm = static_cast<float>(sizeMm);
+                c.hardness = static_cast<float>(hardness);
+                c.moisture = static_cast<float>(p.X);
+                c.loudness = static_cast<float>(spec_.crack_loudness * hardness * 0.5);
+                res.cracks.push_back(c);
+            }
         }
         double Qcrack = k.crack_energy_J * (dfc + 0.5 * dsc) / dt;
 

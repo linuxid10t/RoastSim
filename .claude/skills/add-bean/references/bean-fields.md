@@ -27,6 +27,7 @@ Defaults are in `core/include/roastsim/bean.hpp` (`BeanSpec`, `Kinetics`). Any f
 | `chaff_frac` | 0.010 | washed 0.008–0.010 · natural 0.011–0.014 · honey 0.010–0.012 · wet-hulled 0.005–0.007 · decaf 0.003–0.005 | Silverskin mass fraction: chaff output, and smoke in stir pans. |
 | `kinetics_scale` | 1.0 | washed 1.0 · honey 1.02–1.05 · natural 1.04–1.08 · anaerobic 1.06–1.10 · decaf 1.12–1.18 | Multiplies browning/development speed. Above 1 means darker colour sooner and more weight loss for the same profile. |
 | `bulk_density` | = `density` | leave out | Pile volume (drum fill, probe immersion). Defaults to `density`; set it only if you have a separate packed-pile figure. |
+| `crack_loudness` | 1.0 | 0.4–1.3 | How audible first and second crack are (see docs/SOUND.md). Size, hardness and moisture already shape the pops automatically; use this only for coffees known to crack unusually: decaf 0.4–0.5 (famously quiet), robusta about 1.2 (loud). |
 | `green_rgb` | [0.46, 0.52, 0.34] | see below | Green colour (0–1 sRGB) for the bean views and the future 3D renderer. |
 
 ### Green colour guide

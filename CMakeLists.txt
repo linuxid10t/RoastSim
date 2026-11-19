@@ -81,11 +81,13 @@ if(RS_BUILD_SERVICE)
     service/src/web_server.cpp
     service/src/tc4_serial.cpp
     service/src/capi.cpp
+    service/src/audio_synth.cpp
+    service/src/platform_audio.cpp
   )
   target_include_directories(roastsim_service PUBLIC service/include)
   target_link_libraries(roastsim_service PUBLIC roastsim_core Threads::Threads)
   if(WIN32)
-    target_link_libraries(roastsim_service PUBLIC ws2_32)
+    target_link_libraries(roastsim_service PUBLIC ws2_32 winmm)
     target_compile_definitions(roastsim_service PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0601)
   elseif(HAIKU)
     target_link_libraries(roastsim_service PUBLIC network be)
@@ -99,6 +101,10 @@ endif()
 
 # ------------------------------------------------------------------ apps
 if(RS_BUILD_SERVICE AND RS_BUILD_APPS)
+  # Offline sound renderer (WAV) for auditioning and tuning the sound model.
+  add_executable(roastsim_sound tools/roastsim_sound.cpp)
+  target_link_libraries(roastsim_sound PRIVATE roastsim_service)
+
   add_executable(roastsimd apps/roastsimd/main.cpp)
   target_link_libraries(roastsimd PRIVATE roastsim_service)
   rs_copy_runtime_files(roastsimd)

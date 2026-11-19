@@ -28,6 +28,18 @@ struct SimEvent {
     double bt = 0;
 };
 
+// One audible crack (first or second) from one bean, for sound and 3D effects.
+struct CrackEvent {
+    std::uint64_t seq = 0;
+    double t = 0;            // session time of the crack
+    bool second = false;
+    float size_mm = 7.5f;    // see CrackPop
+    float hardness = 1.0f;
+    float moisture = 0.06f;
+    float loudness = 1.0f;
+    BeanLocation where = BeanLocation::Machine;  // tray cracks are heard in the open
+};
+
 struct ProbeReading {
     std::string id;
     ProbeLocation loc = ProbeLocation::BeanMass;
@@ -123,6 +135,9 @@ public:
     const std::deque<HistorySample>& history() const { return history_; }
     std::uint64_t historyBase() const { return historyBase_; }  // index of history_.front()
     std::vector<SimEvent> eventsSince(std::uint64_t seq) const;
+    // Individual crack sounds after `seq` (oldest first, at most `max`).
+    std::vector<CrackEvent> cracksSince(std::uint64_t seq, std::size_t max = 4096) const;
+    std::uint64_t crackSeq() const { return crackSeq_; }
     const std::vector<SimEvent>& events() const { return events_; }
 
     const RoasterDef& roaster() const { return roaster_; }
@@ -172,6 +187,8 @@ private:
 
     // Rates
     std::uint64_t popsFc_ = 0, popsSc_ = 0;
+    std::deque<CrackEvent> cracks_;
+    std::uint64_t crackSeq_ = 0;
     double smoke_ = 0, chaffRate_ = 0;
     double organicRate_ = 0;  // kg/s smoothed
 

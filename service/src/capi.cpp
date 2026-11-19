@@ -1,7 +1,9 @@
 #include <cstring>
 #include <memory>
 
+#include "roastsim/audio.hpp"
 #include "roastsim/host.hpp"
+#include "roastsim/platform.hpp"
 #include "roastsim/roastsim.h"
 
 using namespace roastsim;
@@ -177,6 +179,58 @@ int rs_host_get_visual(rs_host* h, rs_visual_info* info, rs_visual_bean* beans, 
         }
     }
     return n;
+}
+
+// ---------------------------------------------------------------- sound
+}  // extern "C"
+
+struct rs_audio {
+    std::unique_ptr<AudioSynth> synth;
+    platform::AudioOutput out;
+};
+
+extern "C" {
+
+rs_audio* rs_audio_create(rs_host* h, int sample_rate) {
+    if (!h || sample_rate < 8000) return nullptr;
+    auto* a = new rs_audio;
+    a->synth = std::make_unique<AudioSynth>(*h->host, sample_rate);
+    return a;
+}
+
+void rs_audio_destroy(rs_audio* a) {
+    if (!a) return;
+    a->out.stop();
+    delete a;
+}
+
+void rs_audio_render(rs_audio* a, float* out, int frames) {
+    if (a && out && frames > 0) a->synth->render(out, frames);
+}
+
+void rs_audio_set_mix(rs_audio* a, float master, float machine, float cracks) {
+    if (!a) return;
+    AudioMix m;
+    m.master = master;
+    m.machine = machine;
+    m.cracks = cracks;
+    a->synth->setMix(m);
+}
+
+int rs_audio_play(rs_audio* a, char* err, size_t errlen) {
+    if (!a) return 0;
+    if (a->out.running()) return 1;
+    std::string e;
+    auto fill = [](void* user, float* out, int frames) { static_cast<AudioSynth*>(user)->render(out, frames); };
+    if (!a->out.start(a->synth->sampleRate(), fill, a->synth.get(), &e)) {
+        copyStr(e, err, errlen);
+        return 0;
+    }
+    return 1;
+}
+
+void rs_audio_pause(rs_audio* a) {
+    if (a) a->out.stop();
 }
 
 }  // extern "C"

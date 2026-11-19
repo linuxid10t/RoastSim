@@ -91,6 +91,7 @@ struct BeanSpec {
     double sc_sd = 2.2;
     double chaff_frac = 0.010;       // silverskin mass fraction
     double kinetics_scale = 1.0;     // >1 browns faster (e.g. naturals)
+    double crack_loudness = 1.0;     // crack audibility (decaf ~0.45: famously quiet first crack)
     double green_rgb[3] = {0.46, 0.52, 0.34};
     double bulk_density = 700.0;     // kg/m^3 of the green pile; JSON default = density
     Kinetics kinetics;
@@ -148,9 +149,20 @@ struct BeanSummary {
     double rgb[3] = {0, 0, 0};
 };
 
+// A group of identical crack sounds produced by one parcel in one step.
+struct CrackPop {
+    bool second = false;  // false = first crack, true = second crack
+    int count = 0;
+    float size_mm = 7.5f;   // bean size at the crack (bigger = deeper pop)
+    float hardness = 1.0f;  // density / reference density (harder = sharper, louder)
+    float moisture = 0.06f; // dry-basis water left (wetter = fuller first-crack pop)
+    float loudness = 1.0f;  // relative level, including BeanSpec::crack_loudness
+};
+
 struct BatchStepResult {
     int pops_fc = 0;
     int pops_sc = 0;
+    std::vector<CrackPop> cracks;
     double water_evap_kg = 0;
     double organic_loss_kg = 0;
     double chaff_released_kg = 0;
