@@ -92,6 +92,7 @@ typedef struct rs_state {
     double chaff_g_s;
     double scorch_frac, tipping_frac, oil;
     double ambient_c, line_voltage, altitude_m, humidity_rh;
+    int powered;                        /* master power switch (0 = off, the default) */
 } rs_state;
 
 typedef struct rs_sample {

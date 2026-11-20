@@ -54,10 +54,17 @@ void Simulation::load(const RoasterDef& roaster, const BeanSpec& bean) {
     for (const auto& cd : roaster_.controls) {
         target_[static_cast<int>(cd.id)] = actual_[static_cast<int>(cd.id)] = cd.def;
     }
+    powered_ = false;  // a freshly attached machine starts switched off
     coldReset();
 }
 
 void Simulation::setBean(const BeanSpec& bean) { bean_ = bean; }
+
+void Simulation::setPower(bool on, const std::string& origin) {
+    if (powered_ == on) return;
+    powered_ = on;
+    addEvent("NOTE", origin.empty() ? "user" : origin, on ? "power on" : "power off");
+}
 
 void Simulation::setControl(Control c, double pct) {
     const ControlDef* cd = roaster_.control(c);
@@ -189,7 +196,7 @@ void Simulation::coldReset() {
     popsFc_ = popsSc_ = 0;
     cracks_.clear();
     nextHistory_ = nextRorSample_ = t_;
-    for (int i = 0; i < kControlCount; ++i) actual_[i] = target_[i];
+    for (int i = 0; i < kControlCount; ++i) actual_[i] = powered_ ? target_[i] : 0.0;
 }
 
 void Simulation::repair() {
@@ -209,6 +216,7 @@ bool Simulation::setProbeFault(const std::string& probeId, ProbeFault f, double 
 
 double Simulation::preheat(double target_C, double maxSeconds) {
     if (beanLoc_ == BeanLocation::Machine || !machine_) return -1;
+    if (!powered_) return -1;  // a switched-off machine cannot heat
     Control ctl = roaster_.hasControl(Control::Heat) ? Control::Heat : Control::Voltage;
     if (!roaster_.hasControl(ctl)) return -1;
     // Make sure air moves / drum turns so nothing overheats while we wait.
@@ -263,15 +271,17 @@ void Simulation::stepTray(double dt) {
 
 void Simulation::stepOnce(double dt) {
     if (!machine_) return;
-    // ---- actuator slew
+    // ---- actuator slew (power off: everything winds down to 0; the dial
+    // settings stay untouched and take effect again when switched on)
     for (const auto& cd : roaster_.controls) {
         int i = static_cast<int>(cd.id);
+        double target = powered_ ? target_[i] : 0.0;
         if (cd.slew_per_s > 0) {
-            double d = target_[i] - actual_[i];
+            double d = target - actual_[i];
             double m = cd.slew_per_s * dt;
             actual_[i] += clampd(d, -m, m);
         } else {
-            actual_[i] = target_[i];
+            actual_[i] = target;
         }
     }
 
@@ -395,6 +405,7 @@ void Simulation::sampleHistory() {
 void Simulation::detectEvents() {
     // Alarms (machine + simulation level), edge-triggered into the event log.
     std::uint32_t alarms = machine_->telemetry().alarms;
+    if (!powered_) alarms &= ~AlarmBedStalled;  // a switched-off machine is not "stalled"
     double scorchingFrac = 0, meanT = 0, fc = 0, sc = 0, n = 0;
     if (beanLoc_ != BeanLocation::None) {
         const Kinetics& k = beans_.kinetics();
@@ -494,6 +505,7 @@ Snapshot Simulation::snapshot() const {
     s.pops_fc = popsFc_;
     s.pops_sc = popsSc_;
     s.alarms = lastAlarms_;
+    s.powered = powered_;
     s.env = env_;
     s.last_event_seq = seq_;
     return s;

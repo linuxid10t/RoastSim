@@ -59,7 +59,7 @@ void consoleHelp() {
         "  load <roaster> [bean]      bean <id>\n"
         "  env <key> <value>          ambient_C line_voltage altitude_m gas_pressure humidity_rh\n"
         "  fault <probe> <open|short|spikes|drift|stuck|noisy|none>\n"
-        "  speed <x> | pause | resume\n"
+        "  speed <x> | pause | resume | power [on|off]\n"
         "  units [C|F] [g|kg|oz|lb] [m|ft]   shared UI + Artisan units (saved)\n"
         "  json {\"cmd\": ...}         raw API command\n"
         "  quit\n");
@@ -135,6 +135,14 @@ json::Value parseConsole(const std::string& line, bool& handled) {
     } else if (w == "pause" || w == "resume") {
         cmd["cmd"] = "pause";
         cmd["value"] = w == "pause";
+    } else if (w == "power") {
+        cmd["cmd"] = "power";
+        std::string v;
+        if (ss >> v) {
+            for (auto& ch : v) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (v == "on" || v == "1") cmd["value"] = true;
+            else if (v == "off" || v == "0") cmd["value"] = false;
+        }
     } else if (w == "units") {
         // units F lb ft  (any order, any subset)
         cmd["cmd"] = "units";

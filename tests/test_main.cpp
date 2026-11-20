@@ -201,6 +201,7 @@ TEST(crack_sounds_depend_on_the_bean) {
         Simulation sim;
         sim.setSeed(3);
         sim.load(*catalog().roaster("popper_modded"), *catalog().bean(bean));
+        sim.setPower(true, "test");
         sim.setControl(Control::Heat, 100);
         sim.setControl(Control::Fan, 85);
         sim.charge(100, "test");
@@ -225,6 +226,33 @@ TEST(crack_sounds_depend_on_the_bean) {
     CHECK(kenya.loud > colombia.loud);       // dense, wet, big beans pop loudest
     CHECK(decaf.loud < 0.6 * colombia.loud); // decaf's famously quiet first crack
     CHECK(kenya.size > ethiopia.size);       // bigger beans -> deeper pops
+}
+
+TEST(power_switch_gates_the_machine) {
+    Simulation sim;
+    sim.load(*catalog().roaster("popper_modded"), *catalog().bean("colombia_washed"));
+    CHECK(!sim.powered());                    // machines boot switched off
+    CHECK(sim.preheat(190) < 0);              // preheating needs power
+    sim.setControl(Control::Heat, 100);
+    sim.setControl(Control::Fan, 85);
+    CHECK(sim.charge(100, "test"));           // charging is still physically possible
+    for (int i = 0; i < 400; ++i) sim.step(Simulation::kStep);  // 20 s, machine off
+    Snapshot off = sim.snapshot();
+    CHECK(off.actuators[static_cast<int>(Control::Heat)] == 0);
+    CHECK(off.actuators[static_cast<int>(Control::Fan)] == 0);
+    CHECK(off.beans.T_mean < 30);             // beans stay cold
+    CHECK((off.alarms & AlarmBedStalled) == 0);  // off is not "bed stalled"
+    sim.setPower(true, "test");
+    CHECK(sim.powered());
+    for (int i = 0; i < 1200; ++i) sim.step(Simulation::kStep);  // 60 s switched on
+    Snapshot on = sim.snapshot();
+    CHECK(on.actuators[static_cast<int>(Control::Fan)] > 50);  // blower spun up
+    CHECK(on.tele.heater_W > 100);
+    CHECK(on.beans.T_mean > 30);
+    // The dial settings survived the off period; a reload powers down again.
+    CHECK(on.controls[static_cast<int>(Control::Heat)] == 100);
+    sim.load(*catalog().roaster("popper_modded"), *catalog().bean("colombia_washed"));
+    CHECK(!sim.powered());
 }
 
 TEST(probe_open_fault_reads_minus_one) {

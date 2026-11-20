@@ -74,6 +74,7 @@ struct Snapshot {
     double chaff_rate_g_s = 0;
     std::uint64_t pops_fc = 0, pops_sc = 0;
     std::uint32_t alarms = 0;
+    bool powered = false;
     Environment env;
     std::uint64_t last_event_seq = 0;
 };
@@ -114,6 +115,12 @@ public:
     // Controls in percent (clamped to the control's range).
     void setControl(Control c, double pct);
     double control(Control c) const { return target_[static_cast<int>(c)]; }
+
+    // Master power switch: off drives every actuator toward 0 (the machine still
+    // cools passively and the probes keep reading); the control settings are
+    // kept for when it is switched on again. Defaults to off, also after load().
+    bool powered() const { return powered_; }
+    void setPower(bool on, const std::string& origin);
 
     bool charge(double batch_g, const std::string& origin, std::string* err = nullptr);
     bool drop(const std::string& origin, std::string* err = nullptr);
@@ -168,6 +175,7 @@ private:
 
     double target_[kControlCount] = {};
     double actual_[kControlCount] = {};
+    bool powered_ = false;  // master switch: off forces the actuators to 0
 
     double t_ = 0;
     double stepCarry_ = 0;

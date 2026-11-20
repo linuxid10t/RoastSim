@@ -42,7 +42,7 @@ namespace {
 enum : int {
     IDC_ROASTER = 101, IDC_BEAN, IDC_LOAD, IDC_BATCH, IDC_CHARGE, IDC_DROP, IDC_PREHEAT_T, IDC_PREHEAT,
     IDC_RESET, IDC_REPAIR, IDC_SPEED, IDC_SOUND, IDC_REPORT, IDC_MARKFC, IDC_AMBIENT, IDC_VOLTS, IDC_ALT,
-    IDC_ENVAPPLY, IDC_READOUT, IDC_STATUS, IDC_DESC, IDC_ENVLABEL, IDC_ENVL2, IDC_ENVL3, IDC_VOLUME, IDC_COOL,
+    IDC_POWER, IDC_ENVAPPLY, IDC_READOUT, IDC_STATUS, IDC_DESC, IDC_ENVLABEL, IDC_ENVL2, IDC_ENVL3, IDC_VOLUME, IDC_COOL,
     IDC_SLIDER0 = 200, IDC_SLABEL0 = 220, IDC_SVALUE0 = 240,
     IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY,
     IDM_MARK_DRY = 1020, IDM_MARK_FCS, IDM_MARK_FCE, IDM_MARK_SCS, IDM_MARK_SCE,
@@ -107,7 +107,7 @@ struct App {
     double dpi = 1.0;
 
     HWND roasterCombo, beanCombo, batchEdit, preheatEdit, speedCombo, soundCheck, readout, status, desc;
-    HWND ambientEdit, voltsEdit, altEdit, coolCheck, volSlider = nullptr;
+    HWND ambientEdit, voltsEdit, altEdit, coolCheck, powerCheck, volSlider = nullptr;
     HWND sliders[kSliderCount], sliderLabels[kSliderCount], sliderValues[kSliderCount];
     bool dragging[kSliderCount] = {};
     HMENU unitsMenu = nullptr;
@@ -364,7 +364,8 @@ void layout() {
         place(g.sliderValues[i], pad + w - S(56), y + S(4), S(56), rowH);
         y += S(32);
     }
-    place(g.coolCheck, pad, y, half, rowH);
+    place(g.powerCheck, pad, y, S(74), rowH);
+    place(g.coolCheck, pad + S(80), y, half - S(80), rowH);
     place(g.soundCheck, pad + half + gap, y, S(70), rowH);
     place(g.volSlider, pad + half + gap + S(70), y, w - half - gap - S(70), rowH);
     y += rowH + gap;
@@ -398,6 +399,8 @@ void syncSliders() {
     }
     LRESULT cool = g.st.controls[RS_CTL_COOLING] >= 50 ? BST_CHECKED : BST_UNCHECKED;
     if (SendMessageW(g.coolCheck, BM_GETCHECK, 0, 0) != cool) SendMessageW(g.coolCheck, BM_SETCHECK, cool, 0);
+    LRESULT pwr = g.st.powered ? BST_CHECKED : BST_UNCHECKED;
+    if (SendMessageW(g.powerCheck, BM_GETCHECK, 0, 0) != pwr) SendMessageW(g.powerCheck, BM_SETCHECK, pwr, 0);
 }
 
 std::wstring alarmText(uint32_t a) {
@@ -461,6 +464,7 @@ std::wstring buildReadout() {
         r += L"Beans  none\r\n";
     }
     r += L"\r\n";
+    if (!s.powered) r += L"Power  OFF - heater, fan and motor do nothing\r\n";
     r += L"Bed    " + widen(s.bed_state) + fmt(L"   agitation %.2f   mixing %.0f%%\r\n", s.agitation, s.mix_quality * 100);
     if (s.bean_location == 1) r += fmt(L"       fill %.0f%%   BT probe buried %.0f%%\r\n", s.fill * 100, s.bt_immersion * 100);
     if (s.drum_rpm > 0.1) r += fmt(L"Drum   %.0f rpm\r\n", s.drum_rpm);
@@ -539,6 +543,7 @@ void refresh() {
         s += L"Modbus: " + widen(info["net"].get("modbus", "off")) + L"\r\n";
         s += L"Web/WS: " + widen(info["net"].get("http", "off")) + L"\r\n";
         s += g.st.logger_connected ? L"Logger connected (real time locked)" : L"No logger connected";
+        if (!g.st.powered) s += L"   [POWER OFF]";
         if (g.st.paused) s += L"   [PAUSED]";
         else if (g.st.time_scale != 1.0 && !g.st.logger_connected) s += fmt(L"   [%.0fx]", g.st.time_scale);
         setText(g.status, s);
@@ -883,6 +888,14 @@ void onCommand(int id, int code) {
             if (code == BN_CLICKED)
                 rs_host_set_control(g.host, RS_CTL_COOLING, SendMessageW(g.coolCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 100 : 0);
             break;
+        case IDC_POWER:
+            if (code == BN_CLICKED) {
+                Value c = Value::object();
+                c["cmd"] = "power";
+                c["value"] = SendMessageW(g.powerCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                showError(command(c));
+            }
+            break;
         case IDM_TEMP_C: setUnits("temperature", "C"); break;
         case IDM_TEMP_F: setUnits("temperature", "F"); break;
         case IDM_W_G: setUnits("weight", "g"); break;
@@ -971,6 +984,7 @@ void createWidgets() {
         g.sliders[i] = mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, IDC_SLIDER0 + i);
         g.sliderValues[i] = mk(L"STATIC", L"0%", SS_RIGHT, IDC_SVALUE0 + i);
     }
+    g.powerCheck = mk(L"BUTTON", L"Power", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_POWER);
     g.coolCheck = mk(L"BUTTON", L"Cooling tray fan", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_COOL);
     g.soundCheck = mk(L"BUTTON", L"Sound", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_SOUND);
     SendMessageW(g.soundCheck, BM_SETCHECK, BST_CHECKED, 0);

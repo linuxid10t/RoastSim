@@ -149,6 +149,7 @@ int rs_host_get_state(rs_host* h, rs_state* caller) {
     o->line_voltage = s.env.line_voltage;
     o->altitude_m = s.env.altitude_m;
     o->humidity_rh = s.env.humidity_rh;
+    o->powered = s.powered ? 1 : 0;
     std::uint32_t size = caller->struct_size;
     std::memcpy(caller, &full, std::min<std::size_t>(size, sizeof full));
     caller->struct_size = size;

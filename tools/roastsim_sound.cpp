@@ -62,6 +62,9 @@ std::unique_ptr<Host> makeHost(const Opts& o) {
         std::fprintf(stderr, "%s\n", r.get("error", "load failed").c_str());
         return nullptr;
     }
+    json::Value pw = cmd("power");
+    pw["value"] = true;
+    h->command(pw, "sound");
     RoasterDef def = h->roasterDef();
     bool drum = def.kind == RoasterKind::Drum;
     json::Value set = cmd("set");

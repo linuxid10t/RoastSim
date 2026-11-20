@@ -167,6 +167,9 @@ function onState(s) {
     }
   }
   $('speed').value = s.paused ? '0' : String(s.time_scale);
+  $('power').checked = !!s.power;
+  $('powerHint').textContent = s.power ? 'on' : 'off — heater, fan and motor do nothing';
+  $('controlsPanel').classList.toggle('off', !s.power);
   $('alarms').innerHTML = s.alarms.map(a => `<span>${a.replace(/_/g, ' ')}</span>`).join('');
   renderTables(s);
   drawChart();
@@ -369,6 +372,7 @@ $('load').onclick = async () => {
   send({ cmd: 'subscribe', history_from: 0, event_seq: 0 });
 };
 $('bean').onchange = () => act({ cmd: 'bean', id: $('bean').value });
+$('power').onchange = (e) => act({ cmd: 'power', value: e.target.checked });
 $('charge').onclick = () => act({ cmd: 'charge', batch_g: fromW(+$('batch').value) });
 $('drop').onclick = () => act({ cmd: 'drop' });
 $('preheat').onclick = async () => {

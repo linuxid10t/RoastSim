@@ -20,7 +20,11 @@
 </header>
 
 <main>
-  <section class="panel controls">
+  <section class="panel controls" id="controlsPanel">
+    <div class="row powerrow">
+      <label class="power"><input type="checkbox" id="power"> <b>Power</b></label>
+      <span id="powerHint"></span>
+    </div>
     <p id="desc" class="desc"></p>
     <div class="row">
       <label>Batch <input id="batch" type="number" min="0" step="any" value="100"> <span id="batchUnit">g</span></label>

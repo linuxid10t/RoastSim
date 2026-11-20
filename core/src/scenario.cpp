@@ -34,6 +34,7 @@ void apply(Simulation& sim, const json::Value& a, std::string& err) {
         if (!sim.charge(a.get("batch_g", sim.roaster().batch.default_g), "script", &e)) err = e;
     }
     if (a.getBool("drop", false)) sim.drop("script");
+    if (a.has("power")) sim.setPower(a.getBool("power", true), "script");
     if (a.has("mark")) sim.markEvent(a.get("mark", ""), "script");
     if (a.has("env")) {
         Environment env = sim.environment();
@@ -69,6 +70,9 @@ bool runScenario(const json::Value& script, const Catalog& catalog, ScenarioResu
     applyEnvironmentJson(script["env"], env);
     sim.setEnvironment(env);
     sim.load(*r, *b);
+    // Scripts drive a working roaster: switch it on unless the script says otherwise
+    // (a "power" action can switch it off mid-roast to model a power cut).
+    if (script.getBool("power", true)) sim.setPower(true, "script");
 
     const double batch = script.get("batch_g", r->batch.default_g);
     if (script.get("preheat_C", 0.0) > 0) {

@@ -189,6 +189,7 @@ json::Value Host::stateJson(bool full) const {
     v["env"] = envJson(s.env);
     v["time_scale"] = scale;
     v["paused"] = paused;
+    v["power"] = s.powered;
     v["logger_connected"] = loggerConnected();
     v["event_seq"] = static_cast<double>(s.last_event_seq);
     v["units"] = unitsJson();
@@ -350,6 +351,7 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         double t = cmd.get("target_C", cmd.get("target", 0.0));
         if (cmd.has("target") && !cmd.has("target_C")) t = fromLoggerUnits(t);
         if (!(t > 40 && t < 450)) return fail("preheat target out of range");
+        if (!sim_.powered()) return fail("the machine is powered off - switch it on first");
         double used = sim_.preheat(t);
         if (used < 0) return fail("cannot preheat now (beans in the roaster, or no heat control)");
         json::Value v = ok();
@@ -381,6 +383,15 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         std::lock_guard<std::mutex> lk(mu_);
         paused_ = cmd.getBool("value", !paused_);
         return ok();
+    }
+    if (c == "power") {
+        // Master switch, like "pause": toggles when "value" is absent.
+        std::lock_guard<std::mutex> lk(mu_);
+        bool on = cmd.getBool("value", !sim_.powered());
+        sim_.setPower(on, origin);
+        json::Value v = ok();
+        v["power"] = on;
+        return v;
     }
     if (c == "step") {
         std::lock_guard<std::mutex> lk(mu_);

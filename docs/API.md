@@ -20,6 +20,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `load` | `roaster`, `bean` (either optional) | load presets; cold, empty machine |
 | `bean` | `id` | green coffee for the next charge |
 | `set` | `control` + `value`, or `controls: {heat: 80, fan: 60}` | set controls in %. Names: `heat` (`burner`, `gas`, `power`), `fan` (`air`, `airflow`, `damper`), `drum`, `stir`, `voltage` (`variac`), `cooling` |
+| `power` | `value` (bool; toggles if absent) | master switch (default **off**): with the machine switched off every actuator is forced to 0 and the machine just cools passively, while the control settings are kept for when it is switched on; `preheat` refuses to run |
 | `batch` | `batch_g` | batch size for the next charge |
 | `charge` | `batch_g` (optional) | beans in |
 | `drop` | | beans to the cooling tray |
@@ -64,7 +65,7 @@ Alarm names (and C API bit numbers): `thermostat_open` (0), `fuse_blown` (1), `b
   "beans": {"present": true, "T_mean": 185.1, "T_surface": 187.0, "T_core": 184.1, "moisture_pct": 3.9,
             "weight_loss_pct": 9.8, "agtron_whole": 92, "agtron_ground": 99, "agtron_sd": 4.1,
             "fc_frac": 0, "sc_frac": 0, "level": "...", "rgb": [0.71, 0.53, 0.32]},
-  "smoke": 0.21, "pops_fc": 0, "pops_sc": 0, "alarms": [], "time_scale": 1, "paused": false,
+  "smoke": 0.21, "pops_fc": 0, "pops_sc": 0, "alarms": [], "time_scale": 1, "paused": false, "power": true,
   "logger_connected": true, "event_seq": 7
 }
 ```

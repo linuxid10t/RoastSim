@@ -211,6 +211,12 @@ TEST(modbus_read_write) {
 
 TEST(artisan_websocket_dialect) {
     auto host = startHost();
+    {   // The roaster must be switched on before its heater does anything.
+        json::Value pw = json::Value::object();
+        pw["cmd"] = "power";
+        pw["value"] = true;
+        host->command(pw, "test");
+    }
     platform::socket_t s = wsConnect(basePort() + 1, "WebSocket");
     if (s == platform::kInvalidSocket) return;
     std::string buf;
@@ -323,6 +329,10 @@ TEST(sound_follows_the_machine) {
     p["cmd"] = "pause";
     p["value"] = true;
     host.command(p, "test");
+    json::Value pw = json::Value::object();
+    pw["cmd"] = "power";
+    pw["value"] = true;
+    host.command(pw, "test");  // blower and heater only run with the switch on
     AudioSynth synth(host, 22050);
     std::vector<float> buf(22050);
     auto rms = [&](double simSeconds) {
@@ -370,8 +380,14 @@ TEST(c_api) {
     CHECK((st.control_mask & (1u << RS_CTL_DRUM)) == 0);
     CHECK(rs_host_set_control(h, RS_CTL_HEAT, 90) == 1);
     CHECK(rs_host_set_control(h, RS_CTL_DRUM, 50) == 0);  // stir pan has no drum
+    rs_state st0{};
+    st0.struct_size = sizeof st0;
+    CHECK(rs_host_get_state(h, &st0) == 1);
+    CHECK(st0.powered == 0);  // machines boot switched off
     char out[4096];
-    size_t n = rs_host_command(h, R"({"cmd":"charge","batch_g":200})", "test", out, sizeof out);
+    size_t n = rs_host_command(h, R"({"cmd":"power","value":true})", "test", out, sizeof out);
+    CHECK(n > 0 && std::strstr(out, "\"ok\":true"));
+    n = rs_host_command(h, R"({"cmd":"charge","batch_g":200})", "test", out, sizeof out);
     CHECK(n > 0 && std::strstr(out, "\"ok\":true"));
     rs_host_command(h, R"({"cmd":"step","seconds":120})", "test", out, sizeof out);
     rs_visual_info vi{};
