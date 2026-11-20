@@ -171,6 +171,6 @@ Slider actions: `Serial Command` with `OT1;{}` (heat) and `OT2;{}` (fan).
 ## Troubleshooting
 
 * **"cannot bind 127.0.0.1:502"**: another program (or a second RoastSim) has the port. Use `--modbus-port 5020` and set the same port in Artisan.
-* **Artisan shows -1**: a probe fault is active (Faults menu / web UI) or the register or node name is wrong.
+* **Artisan shows -1**: a probe fault is active (Win32 **Machine ▸ Probe faults** menu / web UI) or the register or node name is wrong.
 * **Curves look jagged in Artisan**: Artisan's sampling interval (Config » Sampling) of 1–3 s is normal. The modded popper's ET ripple is real, because its SSR heater runs a 2 s on/off cycle.
 * **Time seems frozen**: once Artisan connects, the speed returns to 1× by design.

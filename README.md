@@ -54,7 +54,7 @@ On Linux, port 502 needs privileges. Use `--modbus-port 5020` and set the same p
 * **Environment:** ambient temperature, line voltage and sag (big for poppers), altitude (less air mass), humidity, gas pressure.
 * **Faults:** open/shorted/drifting/spiking probes to test Artisan setups; blow the popper's thermal fuse by choking its airflow, then **Repair**.
 * **Speed:** pause, or run 1–120× when no logger is connected. Artisan connecting locks it to real time.
-* **Sound:** hear the blower, burner and drum, the beans tumbling, and every first and second crack, voiced from each bean's size, hardness and moisture (a dense Kenya pops loud and deep, a decaf barely ticks). Use the **Sound** checkbox in the Win32 app or the web UI, or `roastsimd --sound`. `roastsim_sound` renders WAV files offline. See [docs/SOUND.md](docs/SOUND.md).
+* **Sound:** hear the blower, burner and drum, the beans tumbling, and every first and second crack, voiced from each bean's size, hardness and moisture (a dense Kenya pops loud and deep, a decaf barely ticks). Use **Simulation ▸ Sound** in the Win32 app, the **Sound** checkbox in the web UI, or `roastsimd --sound`. `roastsim_sound` renders WAV files offline. See [docs/SOUND.md](docs/SOUND.md).
 
 ## Testing
 

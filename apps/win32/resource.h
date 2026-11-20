@@ -1,0 +1,20 @@
+// Resource ids shared by roastsim.rc and main.cpp.
+#pragma once
+
+#define IDD_ENVIRONMENT 100
+#define IDD_PREHEAT 101
+
+// Environment dialog
+#define IDC_ENV_AMBIENT 1001
+#define IDC_ENV_AMBIENT_U 1002
+#define IDC_ENV_VOLTS 1003
+#define IDC_ENV_OHMS 1004
+#define IDC_ENV_OHMS_U 1005
+#define IDC_ENV_GAS 1006
+#define IDC_ENV_ALT 1007
+#define IDC_ENV_ALT_U 1008
+#define IDC_ENV_DEFAULTS 1009
+
+// Preheat dialog
+#define IDC_PRE_TARGET 1101
+#define IDC_PRE_UNIT 1102

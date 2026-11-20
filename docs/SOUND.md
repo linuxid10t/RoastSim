@@ -4,7 +4,7 @@ RoastSim generates the roaster's sound procedurally from the live simulation: no
 
 | Front end | How it plays |
 |---|---|
-| Win32 app | **Sound** checkbox + volume slider (local playback via `waveOut`) |
+| Win32 app | **Simulation ▸ Sound** and **Simulation ▸ Volume** menus (local playback via `waveOut`) |
 | `roastsimd --sound` | local playback on Windows |
 | Web UI | **Sound** checkbox: the host renders per browser and streams 16-bit PCM over the WebSocket, so phones and Linux/Haiku machines hear exactly the same thing |
 | Future GTK / Haiku shells | call `rs_audio_render()` from their own audio callback (or add a backend in `platform_audio.cpp`) |

@@ -5,6 +5,13 @@
 // Haiku BeAPI shells. Hosts the same servers as roastsimd (Modbus, WebSocket,
 // web UI, optional TC4 serial), so Artisan can connect while you watch here.
 //
+// Layout: the left pane holds only what you touch during a roast (roaster and
+// bean, charge/drop, the machine's controls) plus the live readout. Machine
+// chores (preheat, reset, repair, probe faults), the environment, simulation
+// speed and sound live in menus and dialogs; a status bar along the bottom
+// shows power, speed, environment and connections (click the speed or
+// environment part to change them).
+//
 // Painting: the main window clips its children and only the graph/bean area
 // (right side) is repainted on the refresh timer; the readout is a small
 // double-buffered custom control and text controls are only updated when their
@@ -33,6 +40,7 @@
 #include "roastsim/json.hpp"
 #include "roastsim/platform.hpp"
 #include "roastsim/roastsim.h"
+#include "resource.h"
 
 using roastsim::json::Value;
 
@@ -40,20 +48,32 @@ namespace {
 
 // ---------------------------------------------------------------- ids
 enum : int {
-    IDC_ROASTER = 101, IDC_BEAN, IDC_LOAD, IDC_BATCH, IDC_CHARGE, IDC_DROP, IDC_PREHEAT_T, IDC_PREHEAT,
-    IDC_RESET, IDC_REPAIR, IDC_SPEED, IDC_SOUND, IDC_REPORT, IDC_MARKFC, IDC_AMBIENT, IDC_VOLTS, IDC_ALT,
-    IDC_POWER, IDC_ENVAPPLY, IDC_READOUT, IDC_STATUS, IDC_DESC, IDC_ENVLABEL, IDC_ENVL2, IDC_ENVL3, IDC_VOLUME, IDC_COOL,
+    IDC_ROASTER = 101, IDC_BEAN, IDC_BATCH, IDC_BATCHUNIT, IDC_CHARGE, IDC_DROP, IDC_MARKFC, IDC_POWER, IDC_COOL,
+    IDC_READOUT, IDC_STATUSBAR, IDC_DESC,
     IDC_SLIDER0 = 200, IDC_SLABEL0 = 220, IDC_SVALUE0 = 240,
-    IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY,
+    IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY, IDM_REPORT,
     IDM_MARK_DRY = 1020, IDM_MARK_FCS, IDM_MARK_FCE, IDM_MARK_SCS, IDM_MARK_SCE,
     IDM_FAULT_BT_OPEN = 1040, IDM_FAULT_BT_SPIKES, IDM_FAULT_BT_DRIFT, IDM_FAULT_BT_NOISY, IDM_FAULT_ET_OPEN,
     IDM_FAULT_CLEAR, IDM_ABOUT = 1060,
+    IDM_POWER = 1070, IDM_PREHEAT, IDM_RESET, IDM_REPAIR, IDM_RELOAD,
+    IDM_ENV = 1080, IDM_ENV_AMBIENT, IDM_ENV_VOLTS, IDM_ENV_ALT,
     IDM_TEMP_C = 1100, IDM_TEMP_F, IDM_W_G, IDM_W_KG, IDM_W_OZ, IDM_W_LB, IDM_ALT_M, IDM_ALT_FT,
+    IDM_SPEED0 = 1200,  // + index into kSpeeds
+    IDM_SOUND = 1220, IDM_VOL0,  // + index into kVolumes
 };
 enum : UINT_PTR { TIMER_UI = 1 };
 
 constexpr int kSliderCount = 5;  // heat, fan, drum, stir, voltage
 const int kSliderControls[kSliderCount] = {RS_CTL_HEAT, RS_CTL_FAN, RS_CTL_DRUM, RS_CTL_STIR, RS_CTL_VOLTAGE};
+
+// Simulation speeds (0 = paused) and sound volumes offered in the menus.
+constexpr int kSpeedCount = 7;
+const double kSpeeds[kSpeedCount] = {0, 1, 2, 5, 10, 30, 60};
+constexpr int kVolumeCount = 4;
+const int kVolumes[kVolumeCount] = {25, 50, 75, 100};
+
+// Status bar parts; clicking SB_SPEED or SB_ENV opens the matching menu/dialog.
+enum { SB_STATE, SB_SPEED, SB_ENV, SB_MODBUS, SB_WEB, SB_LOGGER, SB_COUNT };
 
 // ---------------------------------------------------------------- helpers
 std::wstring widen(const std::string& s) {
@@ -103,15 +123,25 @@ struct App {
     HINSTANCE inst = nullptr;
     HWND wnd = nullptr;
     rs_host* host = nullptr;
-    HFONT font = nullptr, mono = nullptr, small = nullptr;
+    HFONT font = nullptr, mono = nullptr, small = nullptr, heading = nullptr;
     double dpi = 1.0;
+    HACCEL accel = nullptr;
 
-    HWND roasterCombo, beanCombo, batchEdit, preheatEdit, speedCombo, soundCheck, readout, status, desc;
-    HWND ambientEdit, voltsEdit, altEdit, coolCheck, powerCheck, volSlider = nullptr;
+    HWND roasterCombo, beanCombo, batchEdit, batchUnit, readout, statusBar, desc;
+    HWND coolCheck, powerCheck;
     HWND sliders[kSliderCount], sliderLabels[kSliderCount], sliderValues[kSliderCount];
     bool dragging[kSliderCount] = {};
-    HMENU unitsMenu = nullptr;
+    HMENU menuBar = nullptr, speedMenu = nullptr;
     std::wstring readoutText;
+    std::wstring statusText[SB_COUNT];
+    int statusH = 0;
+
+    // Section headings painted on the left pane (positions set by layout()).
+    struct Heading { int y; const wchar_t* text; };
+    std::vector<Heading> headings;
+
+    bool soundOn = true;
+    int volume = 75;  // percent
 
     std::vector<std::string> roasterIds, beanIds;
     Value roasterDef;
@@ -120,7 +150,7 @@ struct App {
     rs_state st{};
     std::string unitKey;         // detects unit changes made anywhere (menu, web UI, Artisan TC4)
     double preheatC = 200;       // preheat target, kept in C
-    bool envShown = false;
+    bool unitsShown = false;
     std::vector<rs_sample> hist;
     uint64_t histNext = 0;
     int lastPhase = -1;
@@ -241,6 +271,12 @@ void setReadout(const std::wstring& text) {
     InvalidateRect(g.readout, nullptr, FALSE);
 }
 
+void setStatus(int part, const std::wstring& text) {
+    if (g.statusText[part] == text) return;
+    g.statusText[part] = text;
+    SendMessageW(g.statusBar, SB_SETTEXTW, static_cast<WPARAM>(part), reinterpret_cast<LPARAM>(text.c_str()));
+}
+
 // ---------------------------------------------------------------- roaster setup
 void reloadHistory() {
     g.hist.clear();
@@ -313,76 +349,117 @@ void populateLists() {
 // Relabels and refills every unit-dependent control (called when the unit
 // setting changes, from here or from another front end).
 void applyUnits() {
-    std::wstring wu = widen(wUnit());
-    setText(GetDlgItem(g.wnd, IDC_CHARGE), L"Charge (" + wu + L")");
-    setText(GetDlgItem(g.wnd, IDC_PREHEAT), std::wstring(L"Preheat (") + TU() + L")");
-    setText(GetDlgItem(g.wnd, IDC_ENVLABEL), std::wstring(L"Ambient ") + TU());
-    setText(GetDlgItem(g.wnd, IDC_ENVL3), isFt() ? L"Altitude ft" : L"Altitude m");
+    setText(g.batchUnit, widen(wUnit()));
     SetWindowTextW(g.batchEdit, fmtW(g.st.next_batch_g > 0 ? g.st.next_batch_g : g.st.batch_g).c_str());
-    SetWindowTextW(g.preheatEdit, fmt(L"%.0f", T(g.preheatC)).c_str());
-    SetWindowTextW(g.ambientEdit, fmt(L"%.0f", T(g.st.ambient_c)).c_str());
-    SetWindowTextW(g.voltsEdit, fmt(L"%.0f", g.st.line_voltage).c_str());
-    SetWindowTextW(g.altEdit, fmt(L"%.0f", A(g.st.altitude_m)).c_str());
-    std::string w = wUnit();
-    CheckMenuRadioItem(g.unitsMenu, IDM_TEMP_C, IDM_TEMP_F, isF() ? IDM_TEMP_F : IDM_TEMP_C, MF_BYCOMMAND);
-    int wid = w == "kg" ? IDM_W_KG : w == "oz" ? IDM_W_OZ : w == "lb" ? IDM_W_LB : IDM_W_G;
-    CheckMenuRadioItem(g.unitsMenu, IDM_W_G, IDM_W_LB, wid, MF_BYCOMMAND);
-    CheckMenuRadioItem(g.unitsMenu, IDM_ALT_M, IDM_ALT_FT, isFt() ? IDM_ALT_FT : IDM_ALT_M, MF_BYCOMMAND);
     invalidateRight();
 }
 
+int speedIndex() {
+    if (g.st.paused) return 0;
+    int sel = 1;
+    for (int i = 1; i < kSpeedCount; ++i)
+        if (std::fabs(kSpeeds[i] - g.st.time_scale) < 0.01) sel = i;
+    return sel;
+}
+
+std::wstring envSummary() {
+    return fmt(L"%.0f %s · %.0f V · %.0f %s", T(g.st.ambient_c), TU(), g.st.line_voltage, A(g.st.altitude_m),
+               isFt() ? L"ft" : L"m");
+}
+
+// Menus show live state (checks, radio marks, current environment values);
+// refreshed whenever a menu is about to open.
+void updateMenus() {
+    HMENU m = g.menuBar;
+    std::string w = wUnit();
+    CheckMenuRadioItem(m, IDM_TEMP_C, IDM_TEMP_F, isF() ? IDM_TEMP_F : IDM_TEMP_C, MF_BYCOMMAND);
+    int wid = w == "kg" ? IDM_W_KG : w == "oz" ? IDM_W_OZ : w == "lb" ? IDM_W_LB : IDM_W_G;
+    CheckMenuRadioItem(m, IDM_W_G, IDM_W_LB, wid, MF_BYCOMMAND);
+    CheckMenuRadioItem(m, IDM_ALT_M, IDM_ALT_FT, isFt() ? IDM_ALT_FT : IDM_ALT_M, MF_BYCOMMAND);
+    CheckMenuRadioItem(m, IDM_SPEED0, IDM_SPEED0 + kSpeedCount - 1, IDM_SPEED0 + speedIndex(), MF_BYCOMMAND);
+    int vi = 0;
+    for (int i = 0; i < kVolumeCount; ++i)
+        if (kVolumes[i] == g.volume) vi = i;
+    CheckMenuRadioItem(m, IDM_VOL0, IDM_VOL0 + kVolumeCount - 1, IDM_VOL0 + vi, MF_BYCOMMAND);
+    CheckMenuItem(m, IDM_SOUND, MF_BYCOMMAND | (g.soundOn ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(m, IDM_POWER, MF_BYCOMMAND | (g.st.powered ? MF_CHECKED : MF_UNCHECKED));
+    auto relabel = [&](int id, const std::wstring& text) {
+        ModifyMenuW(m, id, MF_BYCOMMAND | MF_STRING, id, text.c_str());
+    };
+    relabel(IDM_ENV_AMBIENT, fmt(L"Room temperature:  %.0f %s", T(g.st.ambient_c), TU()));
+    relabel(IDM_ENV_VOLTS, fmt(L"Mains voltage:  %.0f V", g.st.line_voltage));
+    relabel(IDM_ENV_ALT, fmt(L"Altitude:  %.0f %s", A(g.st.altitude_m), isFt() ? L"ft" : L"m"));
+}
+
 // ---------------------------------------------------------------- layout
-void layout() {
+void layoutStatusBar() {
+    SendMessageW(g.statusBar, WM_SIZE, 0, 0);
+    RECT sb;
+    GetWindowRect(g.statusBar, &sb);
+    g.statusH = sb.bottom - sb.top;
     RECT rc;
     GetClientRect(g.wnd, &rc);
-    const int pad = S(8), w = S(g.leftWidth) - 2 * pad, rowH = S(24), gap = S(6);
-    int y = pad;
+    // Fixed widths for the first parts, the connection parts share the rest.
+    const int fixed[] = {S(170), S(150), S(190)};
+    int edges[SB_COUNT], x = 0;
+    for (int i = 0; i < 3; ++i) edges[i] = (x += fixed[i]);
+    int rest = std::max(S(300), static_cast<int>(rc.right) - x);
+    edges[SB_MODBUS] = x + rest * 3 / 10;
+    edges[SB_WEB] = x + rest * 7 / 10;
+    edges[SB_LOGGER] = -1;
+    SendMessageW(g.statusBar, SB_SETPARTS, SB_COUNT, reinterpret_cast<LPARAM>(edges));
+}
+
+void layout() {
+    layoutStatusBar();
+    RECT rc;
+    GetClientRect(g.wnd, &rc);
+    const int bottom = rc.bottom - g.statusH;
+    const int pad = S(10), w = S(g.leftWidth) - 2 * pad, rowH = S(24), gap = S(6), headH = S(24);
+    int y = S(6);
     auto place = [&](HWND h, int x, int yy, int ww, int hh) { MoveWindow(h, x, yy, ww, hh, FALSE); };
+    g.headings.clear();
+    auto heading = [&](const wchar_t* text) {
+        g.headings.push_back({y, text});
+        y += headH;
+    };
+
+    heading(L"Roaster and beans");
     place(g.roasterCombo, pad, y, w, S(300));
     y += rowH + gap;
-    int half = (w - gap) / 2;
-    place(g.beanCombo, pad, y, w - S(70) - gap, S(300));
-    place(GetDlgItem(g.wnd, IDC_LOAD), pad + w - S(70), y, S(70), rowH);
+    place(g.beanCombo, pad, y, w, S(300));
     y += rowH + gap;
-    place(g.desc, pad, y, w, S(48));
-    y += S(48) + gap;
-    int c1 = S(70), c2 = S(100);
-    place(g.batchEdit, pad, y, c1, rowH);
-    place(GetDlgItem(g.wnd, IDC_CHARGE), pad + c1 + gap, y, c2, rowH);
-    place(GetDlgItem(g.wnd, IDC_DROP), pad + c1 + c2 + 2 * gap, y, S(80), rowH);
-    place(GetDlgItem(g.wnd, IDC_MARKFC), pad + c1 + c2 + S(80) + 3 * gap, y, w - (c1 + c2 + S(80) + 3 * gap), rowH);
+    place(g.desc, pad, y, w, S(44));
+    y += S(44) + gap;
+
+    heading(L"Roast");
+    const int editW = S(56), unitW = S(26);
+    int bx = pad + editW + S(4) + unitW + gap;
+    int bw = (pad + w - bx - 2 * gap) / 3;
+    place(g.batchEdit, pad, y, editW, rowH);
+    place(g.batchUnit, pad + editW + S(4), y + S(4), unitW, rowH - S(4));
+    place(GetDlgItem(g.wnd, IDC_CHARGE), bx, y, bw, rowH);
+    place(GetDlgItem(g.wnd, IDC_DROP), bx + bw + gap, y, bw, rowH);
+    place(GetDlgItem(g.wnd, IDC_MARKFC), bx + 2 * (bw + gap), y, pad + w - (bx + 2 * (bw + gap)), rowH);
     y += rowH + gap;
-    place(g.preheatEdit, pad, y, c1, rowH);
-    place(GetDlgItem(g.wnd, IDC_PREHEAT), pad + c1 + gap, y, c2, rowH);
-    place(GetDlgItem(g.wnd, IDC_RESET), pad + c1 + c2 + 2 * gap, y, S(80), rowH);
-    place(GetDlgItem(g.wnd, IDC_REPAIR), pad + c1 + c2 + S(80) + 3 * gap, y, w - (c1 + c2 + S(80) + 3 * gap), rowH);
-    y += rowH + gap * 2;
+    place(g.powerCheck, pad, y, S(110), rowH);
+    place(g.coolCheck, pad + S(120), y, w - S(120), rowH);
+    y += rowH + gap;
+
+    bool anySlider = false;
+    for (int i = 0; i < kSliderCount; ++i) anySlider |= IsWindowVisible(g.sliders[i]) != 0;
+    if (anySlider) heading(L"Controls");
     for (int i = 0; i < kSliderCount; ++i) {
         if (!IsWindowVisible(g.sliders[i])) continue;
         place(g.sliderLabels[i], pad, y + S(4), S(90), rowH);
-        place(g.sliders[i], pad + S(92), y, w - S(92) - S(60), S(30));
-        place(g.sliderValues[i], pad + w - S(56), y + S(4), S(56), rowH);
+        place(g.sliders[i], pad + S(92), y, w - S(92) - S(66), S(30));
+        place(g.sliderValues[i], pad + w - S(62), y + S(4), S(62), rowH);
         y += S(32);
     }
-    place(g.powerCheck, pad, y, S(74), rowH);
-    place(g.coolCheck, pad + S(80), y, half - S(80), rowH);
-    place(g.soundCheck, pad + half + gap, y, S(70), rowH);
-    place(g.volSlider, pad + half + gap + S(70), y, w - half - gap - S(70), rowH);
-    y += rowH + gap;
-    place(g.speedCombo, pad, y, S(120), S(300));
-    place(GetDlgItem(g.wnd, IDC_REPORT), pad + S(126), y, S(110), rowH);
-    y += rowH + gap;
-    int ew = (w - S(80) - 3 * gap) / 3;
-    for (int i = 0; i < 3; ++i) place(GetDlgItem(g.wnd, IDC_ENVLABEL + i), pad + i * (ew + gap), y, ew, S(18));
-    y += S(18);
-    place(g.ambientEdit, pad, y, ew, rowH);
-    place(g.voltsEdit, pad + ew + gap, y, ew, rowH);
-    place(g.altEdit, pad + 2 * (ew + gap), y, ew, rowH);
-    place(GetDlgItem(g.wnd, IDC_ENVAPPLY), pad + w - S(80), y, S(80), rowH);
-    y += rowH + gap;
-    int statusH = S(54);
-    place(g.readout, pad, y, w, std::max(S(60), static_cast<int>(rc.bottom) - y - statusH - pad - gap));
-    place(g.status, pad, rc.bottom - statusH - pad, w, statusH);
+    y += gap;
+
+    heading(L"Readings");
+    place(g.readout, pad, y, w, std::max(S(60), bottom - y - pad));
     InvalidateRect(g.wnd, nullptr, TRUE);  // resize/relayout only: repaint everything once
 }
 
@@ -482,9 +559,9 @@ void refresh() {
     g.st.struct_size = sizeof(rs_state);
     if (!rs_host_get_state(g.host, &g.st)) return;
     std::string key = std::string(1, g.st.temp_unit) + g.st.weight_unit + "|" + g.st.altitude_unit;
-    if (key != g.unitKey || !g.envShown) {
+    if (key != g.unitKey || !g.unitsShown) {
         g.unitKey = key;
-        g.envShown = true;
+        g.unitsShown = true;
         applyUnits();
     }
     // History: reload when a roast starts or history was trimmed.
@@ -514,21 +591,20 @@ void refresh() {
             std::string type = e.get("type", "");
             if (type == "CHARGE") g.events.clear();
             g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), e.get("t", 0.0)});
-            if (type == "COOL") PostMessageW(g.wnd, WM_COMMAND, IDC_REPORT, 0);
+            if (type == "COOL") PostMessageW(g.wnd, WM_COMMAND, IDM_REPORT, 0);
         }
         g.eventSeq = g.st.event_seq;
     }
 
     syncSliders();
-    if (GetFocus() != g.speedCombo && !SendMessageW(g.speedCombo, CB_GETDROPPEDSTATE, 0, 0)) {
-        const double speeds[] = {0, 1, 2, 5, 10, 30, 60};
-        int sel = 1;
-        for (int i = 1; i < 7; ++i)
-            if (std::fabs(speeds[i] - g.st.time_scale) < 0.01) sel = i;
-        if (g.st.paused) sel = 0;
-        if (SendMessageW(g.speedCombo, CB_GETCURSEL, 0, 0) != sel) SendMessageW(g.speedCombo, CB_SETCURSEL, sel, 0);
-    }
     setReadout(buildReadout());
+
+    const wchar_t* phases[] = {L"empty", L"roasting", L"cooling", L"done"};
+    setStatus(SB_STATE, g.st.powered ? fmt(L"Power on · %s", phases[std::clamp(g.st.phase, 0, 3)]) : L"POWER OFF");
+    std::wstring speed = g.st.paused ? L"Paused" : g.st.time_scale == 1.0 ? L"Real time" : fmt(L"Speed %gx", g.st.time_scale);
+    if (g.st.logger_connected && !g.st.paused) speed = L"Real time (logger)";
+    setStatus(SB_SPEED, speed + L"  ▾");
+    setStatus(SB_ENV, envSummary());
 
     static int slow = 0;
     if (++slow % 5 == 1) {
@@ -539,14 +615,9 @@ void refresh() {
             layout();
         }
         Value info = cmd1("server");
-        std::wstring s;
-        s += L"Modbus: " + widen(info["net"].get("modbus", "off")) + L"\r\n";
-        s += L"Web/WS: " + widen(info["net"].get("http", "off")) + L"\r\n";
-        s += g.st.logger_connected ? L"Logger connected (real time locked)" : L"No logger connected";
-        if (!g.st.powered) s += L"   [POWER OFF]";
-        if (g.st.paused) s += L"   [PAUSED]";
-        else if (g.st.time_scale != 1.0 && !g.st.logger_connected) s += fmt(L"   [%.0fx]", g.st.time_scale);
-        setText(g.status, s);
+        setStatus(SB_MODBUS, L"Modbus " + widen(info["net"].get("modbus", "off")));
+        setStatus(SB_WEB, L"Web/WS " + widen(info["net"].get("http", "off")));
+        setStatus(SB_LOGGER, g.st.logger_connected ? L"Logger connected" : L"No logger");
     }
 
     g.vinfo.struct_size = sizeof(rs_visual_info);
@@ -733,6 +804,7 @@ void onPaint() {
     HDC dc = BeginPaint(g.wnd, &ps);
     RECT rc;
     GetClientRect(g.wnd, &rc);
+    rc.bottom = std::max(rc.top + 1, rc.bottom - g.statusH);
     RECT right{S(g.leftWidth), 0, rc.right, rc.bottom};
     RECT dirty;
     if (IntersectRect(&dirty, &ps.rcPaint, &right)) {
@@ -752,7 +824,26 @@ void onPaint() {
     }
     // Left pane background: with WS_CLIPCHILDREN this only touches the gaps between controls.
     RECT left{0, 0, S(g.leftWidth), rc.bottom};
-    if (IntersectRect(&dirty, &ps.rcPaint, &left)) FillRect(dc, &dirty, GetSysColorBrush(COLOR_BTNFACE));
+    if (IntersectRect(&dirty, &ps.rcPaint, &left)) {
+        FillRect(dc, &dirty, GetSysColorBrush(COLOR_BTNFACE));
+        // Section headings: bold caption followed by a hairline to the pane edge.
+        HGDIOBJ oldFont = SelectObject(dc, g.heading);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(120, 70, 40));
+        const int pad = S(10);
+        for (const auto& h : g.headings) {
+            int len = static_cast<int>(wcslen(h.text));
+            TextOutW(dc, pad, h.y + S(3), h.text, len);
+            SIZE sz;
+            GetTextExtentPoint32W(dc, h.text, len, &sz);
+            RECT line{pad + sz.cx + S(8), h.y + S(3) + sz.cy / 2, left.right - pad, h.y + S(3) + sz.cy / 2 + 1};
+            FillRect(dc, &line, GetSysColorBrush(COLOR_3DSHADOW));
+        }
+        SelectObject(dc, oldFont);
+        // Divider between the control pane and the graph.
+        RECT div{left.right - 1, 0, left.right, rc.bottom};
+        FillRect(dc, &div, GetSysColorBrush(COLOR_3DSHADOW));
+    }
     EndPaint(g.wnd, &ps);
 }
 
@@ -779,26 +870,199 @@ void setUnits(const char* key, const char* value) {
 
 double editNumber(HWND h) { return _wtof(getText(h).c_str()); }
 
-void onCommand(int id, int code) {
-    switch (id) {
-        case IDC_LOAD:
-        case IDC_ROASTER: {
-            if (id == IDC_ROASTER && code != CBN_SELCHANGE) break;
-            int ri = static_cast<int>(SendMessageW(g.roasterCombo, CB_GETCURSEL, 0, 0));
-            int bi = static_cast<int>(SendMessageW(g.beanCombo, CB_GETCURSEL, 0, 0));
-            if (ri < 0) break;
-            if (g.st.bean_location == 1 &&
-                MessageBoxW(g.wnd, L"Beans are roasting. Load anyway and discard them?", L"RoastSim", MB_YESNO | MB_ICONQUESTION) != IDYES)
-                break;
-            Value c = Value::object();
-            c["cmd"] = "load";
-            c["roaster"] = g.roasterIds[static_cast<size_t>(ri)];
-            if (bi >= 0) c["bean"] = g.beanIds[static_cast<size_t>(bi)];
-            showError(command(c));
-            applyRoasterDef();
-            layout();
-            break;
+// Parses a whole edit field as a number; false if it is empty or not a number.
+bool readNumber(HWND dlg, int id, double& out) {
+    std::wstring s = getText(GetDlgItem(dlg, id));
+    wchar_t* end = nullptr;
+    out = std::wcstod(s.c_str(), &end);
+    while (end && *end == L' ') ++end;
+    return !s.empty() && end && *end == 0 && std::isfinite(out);
+}
+
+std::wstring num(double v, double step) { return fmt(L"%g", std::round(v / step) * step); }
+
+bool fieldError(HWND dlg, int id, const wchar_t* msg) {
+    MessageBoxW(dlg, msg, L"Environment", MB_ICONWARNING);
+    HWND e = GetDlgItem(dlg, id);
+    SetFocus(e);
+    SendMessageW(e, EM_SETSEL, 0, -1);
+    return false;
+}
+
+bool applyEnvironment(HWND dlg) {
+    double amb, volts, ohms, gas, alt;
+    if (!readNumber(dlg, IDC_ENV_AMBIENT, amb) || fromT(amb) < -40 || fromT(amb) > 60)
+        return fieldError(dlg, IDC_ENV_AMBIENT, isF() ? L"Room temperature must be between -40 and 140 °F."
+                                                       : L"Room temperature must be between -40 and 60 °C.");
+    if (!readNumber(dlg, IDC_ENV_VOLTS, volts) || volts < 50 || volts > 260)
+        return fieldError(dlg, IDC_ENV_VOLTS, L"Mains voltage must be between 50 and 260 V.");
+    if (!readNumber(dlg, IDC_ENV_OHMS, ohms) || ohms < 0 || ohms > 5)
+        return fieldError(dlg, IDC_ENV_OHMS, L"Wiring resistance must be between 0 and 5 ohms.");
+    if (!readNumber(dlg, IDC_ENV_GAS, gas) || gas < 0 || gas > 200)
+        return fieldError(dlg, IDC_ENV_GAS, L"Gas supply pressure must be between 0 and 200 %.");
+    if (!readNumber(dlg, IDC_ENV_ALT, alt) || fromA(alt) < -500 || fromA(alt) > 5000)
+        return fieldError(dlg, IDC_ENV_ALT, isFt() ? L"Altitude must be between -1640 and 16400 ft."
+                                                    : L"Altitude must be between -500 and 5000 m.");
+    Value c = Value::object();
+    c["cmd"] = "env";
+    c["ambient_C"] = fromT(amb);
+    c["line_voltage"] = volts;
+    c["source_ohms"] = ohms;
+    c["gas_pressure"] = gas / 100.0;
+    c["altitude_m"] = fromA(alt);
+    Value r = command(c);
+    if (!r.getBool("ok", true)) {
+        MessageBoxW(dlg, widen(r.get("error", "failed")).c_str(), L"Environment", MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
+
+void fillEnvironment(HWND dlg, double ambC, double volts, double ohms, double gas, double altM) {
+    SetDlgItemTextW(dlg, IDC_ENV_AMBIENT, num(T(ambC), 0.1).c_str());
+    SetDlgItemTextW(dlg, IDC_ENV_VOLTS, num(volts, 0.1).c_str());
+    SetDlgItemTextW(dlg, IDC_ENV_OHMS, num(ohms, 0.001).c_str());
+    SetDlgItemTextW(dlg, IDC_ENV_GAS, num(gas * 100.0, 1).c_str());
+    SetDlgItemTextW(dlg, IDC_ENV_ALT, num(A(altM), 1).c_str());
+}
+
+// lParam: the edit control to focus first (the menu item picked), or 0.
+INT_PTR CALLBACK envDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            Value e = cmd1("state")["env"];
+            fillEnvironment(dlg, e.get("ambient_C", 22.0), e.get("line_voltage", 120.0), e.get("source_ohms", 0.25),
+                            e.get("gas_pressure", 1.0), e.get("altitude_m", 0.0));
+            SetDlgItemTextW(dlg, IDC_ENV_AMBIENT_U, TU());
+            SetDlgItemTextW(dlg, IDC_ENV_ALT_U, isFt() ? L"ft" : L"m");
+            HWND focus = GetDlgItem(dlg, lp ? static_cast<int>(lp) : IDC_ENV_AMBIENT);
+            SetFocus(focus);
+            SendMessageW(focus, EM_SETSEL, 0, -1);
+            return FALSE;  // focus set by hand
         }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_ENV_DEFAULTS: {
+                    // The simulator's built-in environment (core Environment defaults).
+                    fillEnvironment(dlg, 22.0, 120.0, 0.25, 1.0, 0.0);
+                    return TRUE;
+                }
+                case IDOK:
+                    if (applyEnvironment(dlg)) EndDialog(dlg, IDOK);
+                    return TRUE;
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+void showEnvironment(int focusId = 0) {
+    DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_ENVIRONMENT), g.wnd, envDlgProc, focusId);
+    refresh();
+}
+
+INT_PTR CALLBACK preheatDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetDlgItemTextW(dlg, IDC_PRE_TARGET, num(T(g.preheatC), 1).c_str());
+            SetDlgItemTextW(dlg, IDC_PRE_UNIT, TU());
+            HWND e = GetDlgItem(dlg, IDC_PRE_TARGET);
+            SetFocus(e);
+            SendMessageW(e, EM_SETSEL, 0, -1);
+            return FALSE;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDOK: {
+                    double v;
+                    if (!readNumber(dlg, IDC_PRE_TARGET, v)) {
+                        MessageBoxW(dlg, L"Enter a target temperature.", L"Preheat", MB_ICONWARNING);
+                        return TRUE;
+                    }
+                    g.preheatC = fromT(v);
+                    EndDialog(dlg, IDOK);
+                    return TRUE;
+                }
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+void preheat() {
+    if (DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_PREHEAT), g.wnd, preheatDlgProc, 0) != IDOK) return;
+    Value c = Value::object();
+    c["cmd"] = "preheat";
+    c["target_C"] = g.preheatC;
+    HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    showError(command(c));
+    SetCursor(old);
+    reloadHistory();
+}
+
+void setSpeed(int i) {
+    Value c = Value::object();
+    if (i == 0) {
+        c["cmd"] = "pause";
+        c["value"] = true;
+    } else {
+        Value p = Value::object();
+        p["cmd"] = "pause";
+        p["value"] = false;
+        command(p);
+        c["cmd"] = "time_scale";
+        c["value"] = kSpeeds[i];
+    }
+    showError(command(c));
+    refresh();
+}
+
+void loadSelected(bool reloadOnly) {
+    int ri = static_cast<int>(SendMessageW(g.roasterCombo, CB_GETCURSEL, 0, 0));
+    int bi = static_cast<int>(SendMessageW(g.beanCombo, CB_GETCURSEL, 0, 0));
+    if (ri < 0) return;
+    if (g.st.bean_location == 1 &&
+        MessageBoxW(g.wnd, reloadOnly ? L"Beans are roasting. Reload the roaster anyway and discard them?"
+                                      : L"Beans are roasting. Switch roaster anyway and discard them?",
+                    L"RoastSim", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        for (size_t i = 0; i < g.roasterIds.size(); ++i)  // put the combo back on the roaster in use
+            if (g.roasterIds[i] == g.currentRoaster) SendMessageW(g.roasterCombo, CB_SETCURSEL, i, 0);
+        return;
+    }
+    Value c = Value::object();
+    c["cmd"] = "load";
+    c["roaster"] = g.roasterIds[static_cast<size_t>(ri)];
+    if (bi >= 0) c["bean"] = g.beanIds[static_cast<size_t>(bi)];
+    showError(command(c));
+    applyRoasterDef();
+    layout();
+}
+
+void setPower(bool on) {
+    Value c = Value::object();
+    c["cmd"] = "power";
+    c["value"] = on;
+    showError(command(c));
+    refresh();
+}
+
+void onCommand(int id, int code) {
+    if (id >= IDM_SPEED0 && id < IDM_SPEED0 + kSpeedCount) {
+        setSpeed(id - IDM_SPEED0);
+        return;
+    }
+    if (id >= IDM_VOL0 && id < IDM_VOL0 + kVolumeCount) {
+        g.volume = kVolumes[id - IDM_VOL0];
+        applySound();
+        return;
+    }
+    switch (id) {
+        case IDC_ROASTER:
+            if (code == CBN_SELCHANGE) loadSelected(false);
+            break;
+        case IDM_RELOAD: loadSelected(true); break;
         case IDC_BEAN: {
             if (code != CBN_SELCHANGE) break;
             int bi = static_cast<int>(SendMessageW(g.beanCombo, CB_GETCURSEL, 0, 0));
@@ -820,81 +1084,39 @@ void onCommand(int id, int code) {
         case IDM_COOLEND: showError(cmd1("cool_end")); break;
         case IDM_EMPTY: showError(cmd1("empty")); break;
         case IDC_MARKFC:
-        case IDM_MARK_FCS: {
-            Value c = Value::object();
-            c["cmd"] = "mark";
-            c["event"] = "FCs";
-            command(c);
-            break;
-        }
-        case IDM_MARK_DRY: case IDM_MARK_FCE: case IDM_MARK_SCS: case IDM_MARK_SCE: {
+        case IDM_MARK_DRY: case IDM_MARK_FCS: case IDM_MARK_FCE: case IDM_MARK_SCS: case IDM_MARK_SCE: {
             const char* names[] = {"DRY", "FCs", "FCe", "SCs", "SCe"};
             Value c = Value::object();
             c["cmd"] = "mark";
-            c["event"] = names[id - IDM_MARK_DRY];
+            c["event"] = id == IDC_MARKFC ? "FCs" : names[id - IDM_MARK_DRY];
             command(c);
             break;
         }
-        case IDC_PREHEAT: {
-            g.preheatC = fromT(editNumber(g.preheatEdit));
-            Value c = Value::object();
-            c["cmd"] = "preheat";
-            c["target_C"] = g.preheatC;
-            SetCursor(LoadCursor(nullptr, IDC_WAIT));
-            showError(command(c));
-            reloadHistory();
+        case IDM_REPORT: showReport(); break;
+        case IDC_POWER:
+            if (code == BN_CLICKED) setPower(SendMessageW(g.powerCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             break;
-        }
-        case IDC_RESET:
-            if (MessageBoxW(g.wnd, L"Cool the machine to ambient and discard any beans?", L"Reset", MB_YESNO) == IDYES) {
-                cmd1("reset");
-                reloadHistory();
-            }
-            break;
-        case IDC_REPAIR: showError(cmd1("repair")); break;
-        case IDC_REPORT: showReport(); break;
-        case IDC_SPEED: {
-            if (code != CBN_SELCHANGE) break;
-            int i = static_cast<int>(SendMessageW(g.speedCombo, CB_GETCURSEL, 0, 0));
-            const double speeds[] = {0, 1, 2, 5, 10, 30, 60};
-            Value c = Value::object();
-            if (i == 0) {
-                c["cmd"] = "pause";
-                c["value"] = true;
-            } else {
-                Value p = Value::object();
-                p["cmd"] = "pause";
-                p["value"] = false;
-                command(p);
-                c["cmd"] = "time_scale";
-                c["value"] = speeds[i];
-            }
-            showError(command(c));
-            break;
-        }
-        case IDC_ENVAPPLY: {
-            Value c = Value::object();
-            c["cmd"] = "env";
-            c["ambient_C"] = fromT(editNumber(g.ambientEdit));
-            c["line_voltage"] = editNumber(g.voltsEdit);
-            c["altitude_m"] = fromA(editNumber(g.altEdit));
-            showError(command(c));
-            break;
-        }
-        case IDC_SOUND:
-            if (code == BN_CLICKED) applySound();
-            break;
+        case IDM_POWER: setPower(!g.st.powered); break;
         case IDC_COOL:
             if (code == BN_CLICKED)
                 rs_host_set_control(g.host, RS_CTL_COOLING, SendMessageW(g.coolCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 100 : 0);
             break;
-        case IDC_POWER:
-            if (code == BN_CLICKED) {
-                Value c = Value::object();
-                c["cmd"] = "power";
-                c["value"] = SendMessageW(g.powerCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                showError(command(c));
+        case IDM_PREHEAT: preheat(); break;
+        case IDM_RESET:
+            if (MessageBoxW(g.wnd, L"Cool the machine to room temperature and discard any beans?", L"Cold reset",
+                            MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                cmd1("reset");
+                reloadHistory();
             }
+            break;
+        case IDM_REPAIR: showError(cmd1("repair")); break;
+        case IDM_ENV: showEnvironment(); break;
+        case IDM_ENV_AMBIENT: showEnvironment(IDC_ENV_AMBIENT); break;
+        case IDM_ENV_VOLTS: showEnvironment(IDC_ENV_VOLTS); break;
+        case IDM_ENV_ALT: showEnvironment(IDC_ENV_ALT); break;
+        case IDM_SOUND:
+            g.soundOn = !g.soundOn;
+            applySound();
             break;
         case IDM_TEMP_C: setUnits("temperature", "C"); break;
         case IDM_TEMP_F: setUnits("temperature", "F"); break;
@@ -938,6 +1160,21 @@ void onCommand(int id, int code) {
     }
 }
 
+// Clicks on the status bar: the speed part pops up the speed menu, the
+// environment part opens the Environment dialog.
+void onStatusClick(int part) {
+    if (part == SB_SPEED) {
+        updateMenus();
+        RECT r;
+        SendMessageW(g.statusBar, SB_GETRECT, SB_SPEED, reinterpret_cast<LPARAM>(&r));
+        POINT pt{r.left, r.top};
+        ClientToScreen(g.statusBar, &pt);
+        TrackPopupMenu(g.speedMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, 0, g.wnd, nullptr);
+    } else if (part == SB_ENV) {
+        showEnvironment();
+    }
+}
+
 void onSlider(HWND slider, int code) {
     for (int i = 0; i < kSliderCount; ++i) {
         if (g.sliders[i] != slider) continue;
@@ -950,16 +1187,14 @@ void onSlider(HWND slider, int code) {
 
 void applySound() {
     if (!g.audio) return;
-    bool on = SendMessageW(g.soundCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    float vol = static_cast<float>(SendMessageW(g.volSlider, TBM_GETPOS, 0, 0)) / 100.0f;
-    rs_audio_set_mix(g.audio, vol, 1.0f, 1.0f);
-    if (!on) {
+    rs_audio_set_mix(g.audio, g.volume / 100.0f, 1.0f, 1.0f);
+    if (!g.soundOn) {
         rs_audio_pause(g.audio);
         return;
     }
     char err[256] = {0};
     if (!rs_audio_play(g.audio, err, sizeof err)) {
-        SendMessageW(g.soundCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        g.soundOn = false;
         MessageBoxA(g.wnd, err, "Sound", MB_ICONWARNING);
     }
 }
@@ -968,57 +1203,35 @@ void applySound() {
 void createWidgets() {
     g.roasterCombo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, IDC_ROASTER);
     g.beanCombo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, IDC_BEAN);
-    mk(L"BUTTON", L"Reload", BS_PUSHBUTTON | WS_TABSTOP, IDC_LOAD);
     g.desc = mk(L"STATIC", L"", SS_LEFT, IDC_DESC);
     SendMessageW(g.desc, WM_SETFONT, reinterpret_cast<WPARAM>(g.small), TRUE);
-    g.batchEdit = mk(L"EDIT", L"100", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IDC_BATCH);
-    mk(L"BUTTON", L"Charge (g)", BS_PUSHBUTTON | WS_TABSTOP, IDC_CHARGE);
+    g.batchEdit = mk(L"EDIT", L"100", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_RIGHT, IDC_BATCH);
+    g.batchUnit = mk(L"STATIC", L"g", SS_LEFT, IDC_BATCHUNIT);
+    mk(L"BUTTON", L"Charge", BS_PUSHBUTTON | WS_TABSTOP, IDC_CHARGE);
     mk(L"BUTTON", L"Drop", BS_PUSHBUTTON | WS_TABSTOP, IDC_DROP);
     mk(L"BUTTON", L"Mark FC", BS_PUSHBUTTON | WS_TABSTOP, IDC_MARKFC);
-    g.preheatEdit = mk(L"EDIT", L"200", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IDC_PREHEAT_T);
-    mk(L"BUTTON", L"Preheat (°C)", BS_PUSHBUTTON | WS_TABSTOP, IDC_PREHEAT);
-    mk(L"BUTTON", L"Cold reset", BS_PUSHBUTTON | WS_TABSTOP, IDC_RESET);
-    mk(L"BUTTON", L"Repair", BS_PUSHBUTTON | WS_TABSTOP, IDC_REPAIR);
+    g.powerCheck = mk(L"BUTTON", L"Power", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_POWER);
+    g.coolCheck = mk(L"BUTTON", L"Cooling tray fan", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_COOL);
     for (int i = 0; i < kSliderCount; ++i) {
         g.sliderLabels[i] = mk(L"STATIC", L"", SS_LEFT, IDC_SLABEL0 + i);
         g.sliders[i] = mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, IDC_SLIDER0 + i);
         g.sliderValues[i] = mk(L"STATIC", L"0%", SS_RIGHT, IDC_SVALUE0 + i);
     }
-    g.powerCheck = mk(L"BUTTON", L"Power", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_POWER);
-    g.coolCheck = mk(L"BUTTON", L"Cooling tray fan", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_COOL);
-    g.soundCheck = mk(L"BUTTON", L"Sound", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_SOUND);
-    SendMessageW(g.soundCheck, BM_SETCHECK, BST_CHECKED, 0);
-    g.volSlider = mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, IDC_VOLUME);
-    SendMessageW(g.volSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
-    SendMessageW(g.volSlider, TBM_SETPOS, TRUE, 70);
-    g.speedCombo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, IDC_SPEED);
-    for (const wchar_t* s : {L"Pause", L"1x real time", L"2x", L"5x", L"10x", L"30x", L"60x"})
-        SendMessageW(g.speedCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
-    SendMessageW(g.speedCombo, CB_SETCURSEL, 1, 0);
-    mk(L"BUTTON", L"Roast report", BS_PUSHBUTTON | WS_TABSTOP, IDC_REPORT);
-    const wchar_t* envNames[] = {L"Ambient °C", L"Line volts", L"Altitude m"};
-    for (int i = 0; i < 3; ++i) {
-        HWND lbl = mk(L"STATIC", envNames[i], SS_LEFT, IDC_ENVLABEL + i);
-        SendMessageW(lbl, WM_SETFONT, reinterpret_cast<WPARAM>(g.small), TRUE);
-    }
-    g.ambientEdit = mk(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IDC_AMBIENT);
-    g.voltsEdit = mk(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IDC_VOLTS);
-    g.altEdit = mk(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IDC_ALT);
-    mk(L"BUTTON", L"Apply env", BS_PUSHBUTTON | WS_TABSTOP, IDC_ENVAPPLY);
     g.readout = mk(L"RoastSimReadout", L"", 0, IDC_READOUT);
-    g.status = mk(L"STATIC", L"", SS_LEFT, IDC_STATUS);
-    SendMessageW(g.status, WM_SETFONT, reinterpret_cast<WPARAM>(g.small), TRUE);
+    g.statusBar = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, g.wnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUSBAR)), g.inst, nullptr);
 
     HMENU bar = CreateMenu();
     HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, IDM_WEB, L"Open web control panel");
-    AppendMenuW(file, MF_STRING, IDM_FOLDER, L"Open program folder");
+    AppendMenuW(file, MF_STRING, IDM_WEB, L"Open &web control panel");
+    AppendMenuW(file, MF_STRING, IDM_FOLDER, L"Open program &folder");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file, MF_STRING, IDM_EXIT, L"Exit");
+    AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
+
     HMENU roast = CreatePopupMenu();
-    AppendMenuW(roast, MF_STRING, IDC_CHARGE, L"Charge");
-    AppendMenuW(roast, MF_STRING, IDC_DROP, L"Drop");
-    AppendMenuW(roast, MF_STRING, IDM_COOLEND, L"End cooling");
+    AppendMenuW(roast, MF_STRING, IDC_CHARGE, L"&Charge");
+    AppendMenuW(roast, MF_STRING, IDC_DROP, L"&Drop");
+    AppendMenuW(roast, MF_STRING, IDM_COOLEND, L"&End cooling");
     AppendMenuW(roast, MF_STRING, IDM_EMPTY, L"Empty roaster (discard beans)");
     AppendMenuW(roast, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(roast, MF_STRING, IDM_MARK_DRY, L"Mark DRY");
@@ -1027,18 +1240,8 @@ void createWidgets() {
     AppendMenuW(roast, MF_STRING, IDM_MARK_SCS, L"Mark SC start");
     AppendMenuW(roast, MF_STRING, IDM_MARK_SCE, L"Mark SC end");
     AppendMenuW(roast, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(roast, MF_STRING, IDC_REPORT, L"Roast report");
-    g.unitsMenu = CreatePopupMenu();
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_TEMP_C, L"Temperature: °C");
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_TEMP_F, L"Temperature: °F");
-    AppendMenuW(g.unitsMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_W_G, L"Weight: grams");
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_W_KG, L"Weight: kilograms");
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_W_OZ, L"Weight: ounces");
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_W_LB, L"Weight: pounds");
-    AppendMenuW(g.unitsMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_ALT_M, L"Altitude: metres");
-    AppendMenuW(g.unitsMenu, MF_STRING, IDM_ALT_FT, L"Altitude: feet");
+    AppendMenuW(roast, MF_STRING, IDM_REPORT, L"Roast &report\tCtrl+R");
+
     HMENU faults = CreatePopupMenu();
     AppendMenuW(faults, MF_STRING, IDM_FAULT_BT_OPEN, L"BT probe open circuit");
     AppendMenuW(faults, MF_STRING, IDM_FAULT_BT_SPIKES, L"BT probe spikes");
@@ -1047,14 +1250,66 @@ void createWidgets() {
     AppendMenuW(faults, MF_STRING, IDM_FAULT_ET_OPEN, L"ET probe open circuit");
     AppendMenuW(faults, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(faults, MF_STRING, IDM_FAULT_CLEAR, L"Clear probe faults");
+    HMENU machine = CreatePopupMenu();
+    AppendMenuW(machine, MF_STRING, IDM_POWER, L"&Power");
+    AppendMenuW(machine, MF_STRING, IDM_PREHEAT, L"Pre&heat...");
+    AppendMenuW(machine, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(machine, MF_STRING, IDM_RESET, L"&Cold reset...");
+    AppendMenuW(machine, MF_STRING, IDM_REPAIR, L"Re&pair (fuse, thermostat)");
+    AppendMenuW(machine, MF_STRING, IDM_RELOAD, L"&Reload roaster preset");
+    AppendMenuW(machine, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(machine, MF_POPUP, reinterpret_cast<UINT_PTR>(faults), L"Probe &faults");
+
+    // Item texts are rewritten with the current values by updateMenus().
+    HMENU env = CreatePopupMenu();
+    AppendMenuW(env, MF_STRING, IDM_ENV_AMBIENT, L"Room temperature");
+    AppendMenuW(env, MF_STRING, IDM_ENV_VOLTS, L"Mains voltage");
+    AppendMenuW(env, MF_STRING, IDM_ENV_ALT, L"Altitude");
+    AppendMenuW(env, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(env, MF_STRING, IDM_ENV, L"&All environment settings...\tCtrl+E");
+
+    g.speedMenu = CreatePopupMenu();
+    const wchar_t* speedNames[kSpeedCount] = {L"&Pause", L"&Real time", L"&2x", L"&5x", L"&10x", L"&30x", L"&60x"};
+    for (int i = 0; i < kSpeedCount; ++i) {
+        AppendMenuW(g.speedMenu, MF_STRING, IDM_SPEED0 + i, speedNames[i]);
+        if (i == 0) AppendMenuW(g.speedMenu, MF_SEPARATOR, 0, nullptr);
+    }
+    HMENU volume = CreatePopupMenu();
+    for (int i = 0; i < kVolumeCount; ++i)
+        AppendMenuW(volume, MF_STRING, IDM_VOL0 + i, fmt(L"%d%%", kVolumes[i]).c_str());
+    HMENU sim = CreatePopupMenu();
+    AppendMenuW(sim, MF_POPUP, reinterpret_cast<UINT_PTR>(g.speedMenu), L"&Speed");
+    AppendMenuW(sim, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(sim, MF_STRING, IDM_SOUND, L"S&ound");
+    AppendMenuW(sim, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Volume");
+
+    HMENU units = CreatePopupMenu();
+    AppendMenuW(units, MF_STRING, IDM_TEMP_C, L"Temperature: °C");
+    AppendMenuW(units, MF_STRING, IDM_TEMP_F, L"Temperature: °F");
+    AppendMenuW(units, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(units, MF_STRING, IDM_W_G, L"Weight: grams");
+    AppendMenuW(units, MF_STRING, IDM_W_KG, L"Weight: kilograms");
+    AppendMenuW(units, MF_STRING, IDM_W_OZ, L"Weight: ounces");
+    AppendMenuW(units, MF_STRING, IDM_W_LB, L"Weight: pounds");
+    AppendMenuW(units, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(units, MF_STRING, IDM_ALT_M, L"Altitude: metres");
+    AppendMenuW(units, MF_STRING, IDM_ALT_FT, L"Altitude: feet");
+
     HMENU help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"About / Artisan connection");
+    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About / Artisan connection");
+
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(roast), L"&Roast");
-    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(g.unitsMenu), L"&Units");
-    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(faults), L"F&aults");
+    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(machine), L"&Machine");
+    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(env), L"&Environment");
+    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(sim), L"&Simulation");
+    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(units), L"&Units");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(help), L"&Help");
     SetMenu(g.wnd, bar);
+    g.menuBar = bar;
+
+    ACCEL acc[] = {{FVIRTKEY | FCONTROL, 'E', IDM_ENV}, {FVIRTKEY | FCONTROL, 'R', IDM_REPORT}};
+    g.accel = CreateAcceleratorTableW(acc, 2);
 }
 
 LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1075,17 +1330,23 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_GETMINMAXINFO: {
             auto* mm = reinterpret_cast<MINMAXINFO*>(lp);
             mm->ptMinTrackSize.x = S(940);
-            mm->ptMinTrackSize.y = S(760);
+            mm->ptMinTrackSize.y = S(700);
             return 0;
         }
         case WM_TIMER:
             if (wp == TIMER_UI) refresh();
             return 0;
+        case WM_INITMENUPOPUP: updateMenus(); return 0;
         case WM_HSCROLL:
-            if (reinterpret_cast<HWND>(lp) == g.volSlider) applySound();
-            else if (lp) onSlider(reinterpret_cast<HWND>(lp), LOWORD(wp));
+            if (lp) onSlider(reinterpret_cast<HWND>(lp), LOWORD(wp));
             return 0;
         case WM_COMMAND: onCommand(LOWORD(wp), HIWORD(wp)); return 0;
+        case WM_NOTIFY: {
+            auto* nm = reinterpret_cast<NMHDR*>(lp);
+            if (nm->hwndFrom == g.statusBar && nm->code == NM_CLICK)
+                onStatusClick(static_cast<int>(reinterpret_cast<NMMOUSE*>(lp)->dwItemSpec));
+            return 0;
+        }
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: onPaint(); return 0;
         case WM_CTLCOLORSTATIC: {
@@ -1119,6 +1380,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     LOGFONTW sm = ncm.lfMessageFont;
     sm.lfHeight = sm.lfHeight * 9 / 10;
     g.small = CreateFontIndirectW(&sm);
+    LOGFONTW hd = ncm.lfMessageFont;
+    hd.lfWeight = FW_SEMIBOLD;
+    g.heading = CreateFontIndirectW(&hd);
     g.mono = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
 
     // roastsim.json next to the exe configures ports, bind address, units...;
@@ -1166,7 +1430,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
-        if (!IsDialogMessageW(w, &m)) {
+        if (!TranslateAcceleratorW(w, g.accel, &m) && !IsDialogMessageW(w, &m)) {
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }
