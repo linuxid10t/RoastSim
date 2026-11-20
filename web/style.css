@@ -48,3 +48,4 @@ td { padding: 2px 0; border-bottom: 1px dashed var(--line); } td:last-child { te
 #events { margin: 0; padding-left: 20px; max-height: 220px; overflow: auto; font-size: 12.5px; }
 dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); max-width: 520px; }
 dialog ul { padding-left: 18px; }
+.big i { font-style: normal; }

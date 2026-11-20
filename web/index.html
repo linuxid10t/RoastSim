@@ -10,6 +10,9 @@
 <header>
   <div class="brand">RoastSim <span id="conn" class="pill off">offline</span> <span id="logger" class="pill off">no logger</span></div>
   <div class="pickers">
+    <select id="uTemp" aria-label="Temperature units" title="Units (shared with Artisan)"><option value="C">°C</option><option value="F">°F</option></select>
+    <select id="uWeight" aria-label="Weight units"><option value="g">g</option><option value="kg">kg</option><option value="oz">oz</option><option value="lb">lb</option></select>
+    <select id="uAlt" aria-label="Altitude units"><option value="m">m</option><option value="ft">ft</option></select>
     <select id="roaster" aria-label="Roaster"></select>
     <select id="bean" aria-label="Green coffee"></select>
     <button id="load" title="Load the selected roaster (cold machine)">Load</button>
@@ -20,13 +23,13 @@
   <section class="panel controls">
     <p id="desc" class="desc"></p>
     <div class="row">
-      <label>Batch <input id="batch" type="number" min="1" step="10" value="100"> g</label>
+      <label>Batch <input id="batch" type="number" min="0" step="any" value="100"> <span id="batchUnit">g</span></label>
       <button id="charge" class="primary">Charge</button>
       <button id="drop" class="warn">Drop</button>
     </div>
     <div id="sliders"></div>
     <div class="row">
-      <label>Preheat <input id="preheatT" type="number" value="200" step="5"> °C</label>
+      <label>Preheat <input id="preheatT" type="number" value="200" step="5"> <span class="tu">°C</span></label>
       <button id="preheat">Preheat</button>
       <button id="reset" title="Discard beans and cool the machine">Cold reset</button>
     </div>
@@ -47,11 +50,11 @@
     <details>
       <summary>Environment &amp; faults</summary>
       <div class="grid2">
-        <label>Ambient °C <input id="env_ambient_C" type="number" step="1"></label>
+        <label>Ambient <span class="tu">°C</span> <input id="env_ambient_C" type="number" step="1"></label>
         <label>Humidity % <input id="env_humidity_rh" type="number" step="5"></label>
         <label>Line volts <input id="env_line_voltage" type="number" step="1"></label>
         <label>Source Ω <input id="env_source_ohms" type="number" step="0.05"></label>
-        <label>Altitude m <input id="env_altitude_m" type="number" step="100"></label>
+        <label>Altitude <span id="altUnit">m</span> <input id="env_altitude_m" type="number" step="100"></label>
         <label>Gas pressure × <input id="env_gas_pressure" type="number" step="0.05"></label>
       </div>
       <button id="envApply">Apply environment</button>
@@ -69,9 +72,9 @@
 
   <section class="panel chartwrap">
     <div class="readouts">
-      <div class="big"><span>BT</span><b id="bt">--</b></div>
-      <div class="big"><span>ET</span><b id="et">--</b></div>
-      <div class="big"><span>RoR</span><b id="ror">--</b></div>
+      <div class="big"><span>BT <i class="tu">°C</i></span><b id="bt">--</b></div>
+      <div class="big"><span>ET <i class="tu">°C</i></span><b id="et">--</b></div>
+      <div class="big"><span>RoR <i class="tu">°C</i>/min</span><b id="ror">--</b></div>
       <div class="big"><span>Time</span><b id="time">--:--</b></div>
       <div class="big"><span>Phase</span><b id="phase">--</b></div>
     </div>

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -37,7 +38,8 @@ void usage() {
         "  --http-port N        web UI + WebSocket port (default 8080), --no-http to disable\n"
         "  --tc4 PORT           TC4 serial emulation: COM20 (Windows+com0com), pty or /dev/tty* (POSIX)\n"
         "  --baud N             TC4 baud rate (default 115200)\n"
-        "  --units C|F          temperature units reported to loggers\n"
+        "  --units C|F          temperature units (UIs and loggers; also: console 'units')\n"
+        "  --weight-units U     g, kg, oz or lb      --altitude-units m|ft\n"
         "  --time-scale X       simulation speed when no logger is connected (default 1)\n"
         "  --seed N             random seed (default: random)\n"
         "  --data DIR, --web DIR  resource directories\n"
@@ -58,6 +60,7 @@ void consoleHelp() {
         "  env <key> <value>          ambient_C line_voltage altitude_m gas_pressure humidity_rh\n"
         "  fault <probe> <open|short|spikes|drift|stuck|noisy|none>\n"
         "  speed <x> | pause | resume\n"
+        "  units [C|F] [g|kg|oz|lb] [m|ft]   shared UI + Artisan units (saved)\n"
         "  json {\"cmd\": ...}         raw API command\n"
         "  quit\n");
 }
@@ -132,6 +135,17 @@ json::Value parseConsole(const std::string& line, bool& handled) {
     } else if (w == "pause" || w == "resume") {
         cmd["cmd"] = "pause";
         cmd["value"] = w == "pause";
+    } else if (w == "units") {
+        // units F lb ft  (any order, any subset)
+        cmd["cmd"] = "units";
+        std::string u;
+        while (ss >> u) {
+            std::string l = u;
+            for (auto& ch : l) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (l == "c" || l == "f") cmd["temperature"] = l;
+            else if (l == "m" || l == "ft") cmd["altitude"] = l;
+            else cmd["weight"] = l;
+        }
     } else {
         handled = false;
     }
@@ -178,6 +192,19 @@ int main(int argc, char** argv) {
     HostConfig cfg;
     std::string script;
     bool list = false, quiet = false, sound = false;
+    // Like the Win32 app, read roastsim.json next to the program unless --config
+    // names another file; unit changes made at runtime are saved back to it.
+    bool explicitConfig = false;
+    for (int i = 1; i < argc; ++i) explicitConfig |= std::string(argv[i]) == "--config";
+    cfg.config_path = platform::executableDir() + "/roastsim.json";
+    if (!explicitConfig) {
+        std::string text, err;
+        if (readTextFile(cfg.config_path, text)) {
+            json::Value v = json::Value::parse(text, &err);
+            if (err.empty()) cfg = HostConfig::fromJson(v, cfg);
+            else std::fprintf(stderr, "warning: %s: %s (ignored)\n", cfg.config_path.c_str(), err.c_str());
+        }
+    }
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -189,7 +216,10 @@ int main(int argc, char** argv) {
             json::Value v = json::Value::parse(text, &err);
             if (!err.empty()) { std::fprintf(stderr, "%s: %s\n", f.c_str(), err.c_str()); return 2; }
             cfg = HostConfig::fromJson(v, cfg);
+            cfg.config_path = f;
         }
+        else if (a == "--weight-units") cfg.weight_units = next();
+        else if (a == "--altitude-units") cfg.altitude_units = next();
         else if (a == "--roaster") cfg.roaster = next();
         else if (a == "--bean") cfg.bean = next();
         else if (a == "--bind") cfg.bind_address = next();

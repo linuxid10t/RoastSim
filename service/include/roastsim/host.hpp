@@ -63,7 +63,12 @@ struct HostConfig {
     bool lock_realtime_with_logger = true;  // force 1x while Artisan is connected
     std::uint64_t seed = 0;      // 0 = random per run
     int parcels = 200;
-    char units = 'C';            // units reported to loggers (C or F)
+    // Units shown by every UI and (temperature) sent to loggers. One shared setting
+    // so RoastSim and Artisan always agree. Internally everything stays C / g / m.
+    char units = 'C';            // temperature: C or F
+    std::string weight_units = "g";   // g | kg | oz | lb
+    std::string altitude_units = "m"; // m | ft
+    std::string config_path;     // where unit changes are saved (roastsim.json); "" = don't save
     double logger_timeout_s = 5.0;
     ArtisanWsConfig ws;
 
@@ -105,8 +110,15 @@ public:
     // Temperature in the units configured for loggers.
     double toLoggerUnits(double celsius) const;
     double fromLoggerUnits(double t) const;
-    char units() const { return cfg_.units; }
-    void setUnits(char u) { cfg_.units = (u == 'F' || u == 'f') ? 'F' : 'C'; }
+    char units() const { return tempUnit_.load(); }
+    void setUnits(char u) { tempUnit_ = (u == 'F' || u == 'f') ? 'F' : 'C'; }  // temperature only, not saved
+    std::string weightUnits() const;
+    std::string altitudeUnits() const;
+    json::Value unitsJson() const;
+    // Changes any of the three (empty / 0 = keep) and saves them to config_path.
+    // Returns false with a message for an unknown unit.
+    bool changeUnits(char temp, const std::string& weight, const std::string& altitude, bool save, std::string* err,
+                     bool* saved = nullptr);
 
     void noteLoggerActivity(const std::string& who);
     bool loggerConnected() const;
@@ -132,6 +144,10 @@ private:
     std::thread simThread_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> running_{false};
+
+    std::atomic<char> tempUnit_{'C'};
+    mutable std::mutex unitsMu_;
+    std::string weightUnit_ = "g", altitudeUnit_ = "m";
 
     mutable std::mutex loggerMu_;
     std::chrono::steady_clock::time_point lastLogger_{};

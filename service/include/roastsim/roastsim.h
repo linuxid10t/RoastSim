@@ -77,6 +77,21 @@ typedef struct rs_state {
     uint64_t event_seq;                 /* highest event sequence number */
     uint64_t history_end;               /* index one past the newest history sample */
     double batch_g;
+    /* --- added in API 1.1 (append-only; check struct_size) --- */
+    double next_batch_g;                /* batch size for the next charge */
+    char temp_unit;                     /* 'C' or 'F': display + logger units (values above stay in C) */
+    char weight_unit[4];                /* "g", "kg", "oz" or "lb" (values above stay in grams) */
+    char altitude_unit[4];              /* "m" or "ft" (altitude_m stays in metres) */
+    char bed_state[24];                 /* "fluidized", "stalled", "tumbling", "stirred", "empty", ... */
+    char roast_level[32];               /* e.g. "City+" from the ground Agtron */
+    double bean_min_c, bean_max_c;      /* coolest / hottest bean group (roast evenness) */
+    double expansion;                   /* mean bean diameter / green diameter */
+    double fill;                        /* bean volume / chamber volume */
+    double bt_immersion;                /* 0..1 how buried the BT probe is */
+    double drum_rpm, stir_rpm, voltage_v;
+    double chaff_g_s;
+    double scorch_frac, tipping_frac, oil;
+    double ambient_c, line_voltage, altitude_m, humidity_rh;
 } rs_state;
 
 typedef struct rs_sample {

@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 
@@ -74,11 +76,14 @@ size_t rs_host_command(rs_host* h, const char* json, const char* origin, char* o
     return s.size();
 }
 
-int rs_host_get_state(rs_host* h, rs_state* o) {
-    if (!h || !o || o->struct_size < sizeof(rs_state)) return 0;
+int rs_host_get_state(rs_host* h, rs_state* caller) {
+    // Versioned struct: callers built against an older (shorter) rs_state get
+    // the fields they know about. Fill a full copy, then copy struct_size bytes.
+    if (!h || !caller || caller->struct_size < offsetof(rs_state, next_batch_g)) return 0;
+    rs_state full{};
+    rs_state* o = &full;
     Snapshot s = h->host->snapshot();
     std::uint64_t next = h->host->historyEnd();
-    std::memset(reinterpret_cast<char*>(o) + sizeof(uint32_t), 0, sizeof(rs_state) - sizeof(uint32_t));
     o->t_session = s.t_session;
     o->t_roast = s.t_roast;
     o->phase = static_cast<int>(s.phase);
@@ -121,6 +126,32 @@ int rs_host_get_state(rs_host* h, rs_state* o) {
     o->event_seq = s.last_event_seq;
     o->history_end = next;
     o->batch_g = s.batch_g;
+    json::Value st = h->host->stateJson(false);
+    o->next_batch_g = st.get("next_batch_g", s.batch_g);
+    o->temp_unit = h->host->units();
+    copyStr(h->host->weightUnits(), o->weight_unit, sizeof o->weight_unit);
+    copyStr(h->host->altitudeUnits(), o->altitude_unit, sizeof o->altitude_unit);
+    copyStr(s.tele.bed_state ? s.tele.bed_state : "", o->bed_state, sizeof o->bed_state);
+    copyStr(s.beans.present ? roastLevelName(s.beans.agtron_ground) : "", o->roast_level, sizeof o->roast_level);
+    o->bean_min_c = s.beans.T_min;
+    o->bean_max_c = s.beans.T_max;
+    o->expansion = s.beans.expansion;
+    o->fill = s.tele.fill;
+    o->bt_immersion = s.tele.bt_immersion;
+    o->drum_rpm = s.tele.drum_rpm;
+    o->stir_rpm = s.tele.stir_rpm;
+    o->voltage_v = s.tele.voltage_V;
+    o->chaff_g_s = s.chaff_rate_g_s;
+    o->scorch_frac = s.beans.scorch_frac;
+    o->tipping_frac = s.beans.tipping_frac;
+    o->oil = s.beans.oil;
+    o->ambient_c = s.env.ambient_C;
+    o->line_voltage = s.env.line_voltage;
+    o->altitude_m = s.env.altitude_m;
+    o->humidity_rh = s.env.humidity_rh;
+    std::uint32_t size = caller->struct_size;
+    std::memcpy(caller, &full, std::min<std::size_t>(size, sizeof full));
+    caller->struct_size = size;
     return 1;
 }
 

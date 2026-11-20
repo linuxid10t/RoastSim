@@ -191,6 +191,7 @@ json::Value Host::stateJson(bool full) const {
     v["paused"] = paused;
     v["logger_connected"] = loggerConnected();
     v["event_seq"] = static_cast<double>(s.last_event_seq);
+    v["units"] = unitsJson();
     return v;
 }
 
@@ -394,9 +395,18 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         return ok();
     }
     if (c == "units") {
-        std::string u = cmd.get("value", "C");
-        setUnits(u.empty() ? 'C' : u[0]);
-        return ok();
+        // {"cmd":"units","temperature":"F","weight":"lb","altitude":"ft"}: any subset.
+        // ("value" is accepted as the temperature for older clients.) Saved to roastsim.json.
+        std::string t = cmd.get("temperature", cmd.get("value", "").c_str());
+        std::string err;
+        bool saved = false;
+        if (!changeUnits(t.empty() ? 0 : t[0], cmd.get("weight", ""), cmd.get("altitude", ""),
+                         cmd.getBool("save", true), &err, &saved))
+            return fail(err);
+        json::Value v = ok();
+        v["units"] = unitsJson();
+        v["saved"] = saved;
+        return v;
     }
     if (c == "parcels") {
         std::lock_guard<std::mutex> lk(mu_);

@@ -1,6 +1,9 @@
 #include "roastsim/host.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
 
 #include "internal.hpp"
 #include "roastsim/platform.hpp"
@@ -29,6 +32,9 @@ HostConfig HostConfig::fromJson(const json::Value& v, const HostConfig& base) {
     c.parcels = static_cast<int>(v.get("parcels", static_cast<double>(c.parcels)));
     std::string u = v.get("units", std::string(1, c.units).c_str());
     c.units = (!u.empty() && (u[0] == 'F' || u[0] == 'f')) ? 'F' : 'C';
+    c.weight_units = v.get("weight_units", c.weight_units.c_str());
+    c.altitude_units = v.get("altitude_units", c.altitude_units.c_str());
+    c.config_path = v.get("config_path", c.config_path.c_str());
     c.logger_timeout_s = v.get("logger_timeout_s", c.logger_timeout_s);
     const json::Value& w = v["artisan_ws"];
     if (w.isObject()) {
@@ -61,6 +67,8 @@ json::Value HostConfig::toJson() const {
     v["seed"] = static_cast<double>(seed);
     v["parcels"] = parcels;
     v["units"] = std::string(1, units);
+    v["weight_units"] = weight_units;
+    v["altitude_units"] = altitude_units;
     json::Value w = json::Value::object();
     w["id_node"] = ws.id_node;
     w["machine_node"] = ws.machine_node;
@@ -81,6 +89,8 @@ json::Value HostConfig::toJson() const {
 // ---------------------------------------------------------------- host
 Host::Host(HostConfig cfg) : cfg_(std::move(cfg)) {
     timeScale_ = cfg_.time_scale > 0 ? cfg_.time_scale : 1.0;
+    std::string ignored;
+    changeUnits(cfg_.units, cfg_.weight_units, cfg_.altitude_units, false, &ignored);
 }
 
 Host::~Host() { stop(); }
@@ -226,10 +236,80 @@ bool Host::setControl(Control c, double pct, const std::string& origin) {
 
 double Host::toLoggerUnits(double c) const {
     if (c == -1.0) return -1.0;  // open probe marker passes through
-    return cfg_.units == 'F' ? c * 9.0 / 5.0 + 32.0 : c;
+    return units() == 'F' ? c * 9.0 / 5.0 + 32.0 : c;
 }
 
-double Host::fromLoggerUnits(double t) const { return cfg_.units == 'F' ? (t - 32.0) * 5.0 / 9.0 : t; }
+std::string Host::weightUnits() const {
+    std::lock_guard<std::mutex> lk(unitsMu_);
+    return weightUnit_;
+}
+
+std::string Host::altitudeUnits() const {
+    std::lock_guard<std::mutex> lk(unitsMu_);
+    return altitudeUnit_;
+}
+
+json::Value Host::unitsJson() const {
+    json::Value v = json::Value::object();
+    v["temperature"] = std::string(1, units());
+    std::lock_guard<std::mutex> lk(unitsMu_);
+    v["weight"] = weightUnit_;
+    v["altitude"] = altitudeUnit_;
+    return v;
+}
+
+bool Host::changeUnits(char temp, const std::string& weight, const std::string& altitude, bool save, std::string* err,
+                       bool* saved) {
+    auto lower = [](std::string s) {
+        for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return s;
+    };
+    std::string w = lower(weight), a = lower(altitude);
+    if (w == "lbs" || w == "pound" || w == "pounds") w = "lb";
+    if (w == "grams" || w == "gram") w = "g";
+    if (a == "feet" || a == "foot") a = "ft";
+    if (a == "meters" || a == "metres") a = "m";
+    if (temp && temp != 'C' && temp != 'c' && temp != 'F' && temp != 'f') {
+        if (err) *err = "temperature units must be C or F";
+        return false;
+    }
+    if (!w.empty() && w != "g" && w != "kg" && w != "oz" && w != "lb") {
+        if (err) *err = "weight units must be g, kg, oz or lb";
+        return false;
+    }
+    if (!a.empty() && a != "m" && a != "ft") {
+        if (err) *err = "altitude units must be m or ft";
+        return false;
+    }
+    if (temp) setUnits(temp);
+    {
+        std::lock_guard<std::mutex> lk(unitsMu_);
+        if (!w.empty()) weightUnit_ = w;
+        if (!a.empty()) altitudeUnit_ = a;
+    }
+    if (saved) *saved = false;
+    if (save && !cfg_.config_path.empty()) {
+        // Update only the unit keys, keeping everything else the user put in the file.
+        std::string text, perr;
+        json::Value file = json::Value::object();
+        if (readTextFile(cfg_.config_path, text)) {
+            json::Value parsed = json::Value::parse(text, &perr);
+            if (perr.empty() && parsed.isObject()) file = parsed;
+        }
+        json::Value u = unitsJson();
+        file["units"] = u["temperature"];
+        file["weight_units"] = u["weight"];
+        file["altitude_units"] = u["altitude"];
+        std::ofstream f(std::filesystem::u8path(cfg_.config_path), std::ios::binary | std::ios::trunc);
+        if (f) {
+            f << file.dump(2) << "\n";
+            if (saved) *saved = static_cast<bool>(f);
+        }
+    }
+    return true;
+}
+
+double Host::fromLoggerUnits(double t) const { return units() == 'F' ? (t - 32.0) * 5.0 / 9.0 : t; }
 
 void Host::noteLoggerActivity(const std::string& who) {
     std::lock_guard<std::mutex> lk(loggerMu_);
@@ -258,7 +338,7 @@ json::Value Host::serverInfo() const {
     v["bind_address"] = cfg_.bind_address;
     if (net_) v["net"] = net_->info();
     v["tc4"] = tc4_ ? tc4_->status() : std::string("off");
-    v["units"] = std::string(1, cfg_.units);
+    v["units"] = unitsJson();
     json::Value lg = json::Value::object();
     lg["connected"] = loggerConnected();
     {
