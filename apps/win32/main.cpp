@@ -165,9 +165,10 @@ struct App {
 
     rs_state st{};
     // The graph covers one session: it starts when the machine is switched on
-    // (or at CHARGE, if beans go into a machine that is still off) and ends
-    // with the roast report (COOL), when the machine switches off. Start and
-    // end come from the simulator's own event times, not from when we notice.
+    // and ends with the roast report (COOL), when the machine switches off.
+    // Start and end come from the simulator's own event times, not from when
+    // we notice. Beans charged into a switched-off machine still count as the
+    // roast once it is switched on.
     // Session-clock seconds; graphStart < 0 = not started, graphEnd < 0 = still recording.
     double graphStart = -1, graphEnd = -1;
     std::string unitKey;         // detects unit changes made anywhere (menu, web UI, Artisan TC4)
@@ -176,7 +177,8 @@ struct App {
     std::vector<rs_sample> hist;
     uint64_t histNext = 0;
     int lastPhase = -1;
-    std::vector<EventMark> events;
+    std::vector<EventMark> events;    // events of the current graph's roast
+    std::vector<EventMark> offRoast;  // roast charged while the machine is off (no graph yet)
     uint64_t eventSeq = 0;
     rs_audio* audio = nullptr;   // procedural roaster sound (docs/SOUND.md)
 
@@ -459,6 +461,7 @@ void reloadHistory() {
     g.hist.clear();
     g.histNext = 0;
     g.events.clear();
+    g.offRoast.clear();
     g.eventSeq = 0;
     g.graphStart = g.graphEnd = -1;
 }
@@ -469,6 +472,10 @@ void startGraph(double t) {
     g.graphEnd = -1;
     g.events.clear();
     if (t < 0) return;
+    // Beans charged while the machine was off: that roast carries on here
+    // (its CHARGE stays off the graph, which only starts now).
+    g.events.swap(g.offRoast);
+    g.offRoast.clear();
     auto keep = std::find_if(g.hist.begin(), g.hist.end(), [t](const rs_sample& s) { return s.t >= t - 1.0; });
     g.hist.erase(g.hist.begin(), keep);  // samples of earlier graphs
 }
@@ -792,7 +799,10 @@ void refresh() {
             // simulator's history: start a new graph if the machine is on.
             std::string detail = e.get("detail", "");
             if (type == "NOTE" && detail == "cold reset") {
-                if (g.graphStart < 0 || t > g.graphStart) startGraph(g.st.powered ? t : -1);
+                if (g.graphStart < 0 || t > g.graphStart) {
+                    g.offRoast.clear();
+                    startGraph(g.st.powered ? t : -1);
+                }
                 continue;
             }
             // Switching on starts a new graph at the moment of the switch,
@@ -801,11 +811,18 @@ void refresh() {
             if (type == "NOTE" && detail == "power on" &&
                 (g.graphStart < 0 || g.graphEnd >= 0 || eventTime("CHARGE") < 0))
                 startGraph(t);
-            // Charging a machine that is still switched off starts the graph
-            // at CHARGE, so switching on afterwards continues that roast.
-            if (type == "CHARGE" && (g.graphStart < 0 || g.graphEnd >= 0)) startGraph(t);
+            // No graph recording (machine off): beans charged into the cold
+            // machine are held back and become the roast of the graph that
+            // starts at power-on.
+            if (g.graphStart < 0 || g.graphEnd >= 0) {
+                if (type == "CHARGE") g.offRoast.clear();
+                if (type == "CHARGE" || !g.offRoast.empty())
+                    g.offRoast.push_back({type, detail, e.get("t_roast", -1.0), t, e.get("bt", -1.0)});
+                if (type == "COOL") g.offRoast.clear();  // finished without ever being switched on
+                continue;
+            }
             // Only events of the current graph (a refetch can replay older ones).
-            if (g.graphStart < 0 || t < g.graphStart || g.graphEnd >= 0) continue;
+            if (t < g.graphStart) continue;
             if (type == "CHARGE") g.events.clear();
             g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), t, e.get("bt", -1.0)});
             if (type == "COOL") {
@@ -877,7 +894,9 @@ void paintGraph(HDC dc, RECT area) {
     auto tx = [&](const rs_sample& s) { return static_cast<double>(s.t) - origin; };
     double x0 = 0, x1 = 5 * 60.0;
     if (roast) {
-        x0 = std::min(0.0, std::floor((g.graphStart - chargeAt) / 30.0) * 30.0);
+        // Negative when the machine was switched on before CHARGE (preheat);
+        // positive when the beans went into a cold machine before power-on.
+        x0 = std::floor((g.graphStart - chargeAt) / 30.0) * 30.0;
         x1 = std::max(12.0 * 60.0, std::ceil((tEnd - chargeAt + 60) / 120.0) * 120.0);
     } else if (started) {
         x1 = std::max(x1, std::ceil((tEnd - g.graphStart + 30) / 60.0) * 60.0);
@@ -1078,6 +1097,30 @@ void paintBeans(HDC dc, RECT area) {
     SelectObject(dc, oldPen);
 }
 
+// Large live BT / ET / RoR above the graph, styled like the web UI's readouts
+// (same colours as their curves). They stay in the Readings box too.
+void paintReadouts(HDC dc, RECT area) {
+    HBRUSH bg = CreateSolidBrush(RGB(250, 249, 246));
+    FillRect(dc, &area, bg);
+    DeleteObject(bg);
+    SetBkMode(dc, TRANSPARENT);
+    const std::wstring tu = TU();
+    struct Item { std::wstring caption, value; COLORREF color; };
+    auto probe = [](double c) { return c == -1.0 ? std::wstring(L"open") : fmt(L"%.1f", T(c)); };
+    const Item items[] = {
+        {L"BT " + tu, probe(g.st.bt), RGB(70, 112, 200)},
+        {L"ET " + tu, probe(g.st.et), RGB(200, 64, 42)},
+        {L"RoR " + tu + L"/min", g.st.t_roast > 0 ? fmt(L"%.1f", R(g.st.ror_bt)) : L"--", RGB(224, 150, 42)},
+    };
+    int x = area.left + S(16);
+    for (const auto& it : items) {
+        drawText(dc, g.small, RGB(122, 111, 102), x, area.top + S(8), it.caption);
+        drawText(dc, g.big, it.color, x, area.top + S(22), it.value);
+        // Room for the widest value this column will show, so nothing shifts.
+        x += std::max(textWidth(dc, g.big, L"888.8"), textWidth(dc, g.small, it.caption)) + S(36);
+    }
+}
+
 void onPaint() {
     PAINTSTRUCT ps;
     HDC dc = BeginPaint(g.wnd, &ps);
@@ -1091,9 +1134,11 @@ void onPaint() {
         HBITMAP bmp = CreateCompatibleBitmap(dc, right.right - right.left, right.bottom);
         HGDIOBJ old = SelectObject(mem, bmp);
         RECT local{0, 0, right.right - right.left, right.bottom};
-        int beanH = S(150);
-        RECT graph{0, 0, local.right, local.bottom - beanH};
+        int beanH = S(150), readH = S(62);
+        RECT readouts{0, 0, local.right, readH};
+        RECT graph{0, readH, local.right, local.bottom - beanH};
         RECT beans{0, local.bottom - beanH, local.right, local.bottom};
+        paintReadouts(mem, readouts);
         paintGraph(mem, graph);
         paintBeans(mem, beans);
         BitBlt(dc, right.left, 0, local.right, local.bottom, mem, 0, 0, SRCCOPY);

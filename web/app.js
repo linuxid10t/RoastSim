@@ -16,16 +16,18 @@ let ws = null, reqId = 0;
 const pending = new Map();
 let state = null, def = null;
 let history = [];          // rows: arrays in COLS order, kept since power-on
-let events = [];           // events of the current graph
+let events = [];           // events of the current graph's roast
+let offRoast = [];         // roast charged while the machine is off (no graph yet)
 let dragging = new Set();
 let snd = null;            // { ctx, gain, rate, next } while sound is on
 let volume = 75;           // percent
 let preheatC = 200;        // preheat target, kept in C
 let serverInfo = null;
 
-// The graph covers one session: it starts when the machine is switched on (or
-// at CHARGE, if beans go into a machine that is still off) and ends with the
-// roast report (COOL), when the machine switches off again.
+// The graph covers one session: it starts when the machine is switched on and
+// ends with the roast report (COOL), when the machine switches off again.
+// Beans charged into a switched-off machine still count as the roast once it
+// is switched on.
 // Session-clock seconds; start < 0 = not started, end < 0 = still recording.
 let graph = { start: -1, end: -1 };
 // Events up to this sequence number were replayed on connect: they rebuild the
@@ -66,7 +68,7 @@ function connect() {
   ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   ws.onopen = async () => {
-    history = []; events = []; graph = { start: -1, end: -1 };
+    history = []; events = []; offRoast = []; graph = { start: -1, end: -1 };
     renderEvents();
     await loadLists();
     await refreshDef();
@@ -160,7 +162,13 @@ const fmtSigned = (s) => s < 0 ? '-' + fmtTime(-s) : fmtTime(s);
 function startGraph(t) {
   graph = { start: t, end: -1 };
   events = [];
-  if (t >= 0) { const i = history.findIndex(r => r[0] >= t - 1); history.splice(0, i < 0 ? history.length : i); }
+  if (t >= 0) {
+    // Beans charged while the machine was off: that roast carries on here
+    // (its CHARGE stays off the graph, which only starts now).
+    events = offRoast;
+    const i = history.findIndex(r => r[0] >= t - 1); history.splice(0, i < 0 ? history.length : i);
+  }
+  offRoast = [];
   renderEvents();
 }
 
@@ -171,17 +179,22 @@ function onEvent(e) {
   // A cold reset or roaster load (from any front end) wipes the simulator's
   // history: start a new graph if the machine is on.
   if (type === 'NOTE' && e.detail === 'cold reset') {
-    if (graph.start < 0 || e.t > graph.start) startGraph(state && state.power ? e.t : -1);
+    if (graph.start < 0 || e.t > graph.start) { offRoast = []; startGraph(state && state.power ? e.t : -1); }
     return;
   }
   // Switching on starts a new graph, unless a roast is in progress on the
   // current one (a mid-roast power cut keeps the graph going).
   if (type === 'NOTE' && e.detail === 'power on' &&
       (graph.start < 0 || graph.end >= 0 || eventTime('CHARGE') < 0)) startGraph(e.t);
-  // Charging a machine that is still switched off starts the graph at CHARGE,
-  // so switching on afterwards continues that roast.
-  if (type === 'CHARGE' && (graph.start < 0 || graph.end >= 0)) startGraph(e.t);
-  if (graph.start < 0 || e.t < graph.start - 0.5 || graph.end >= 0) return;  // not part of this graph
+  // No graph recording (machine off): beans charged into the cold machine are
+  // held back and become the roast of the graph that starts at power-on.
+  if (graph.start < 0 || graph.end >= 0) {
+    if (type === 'CHARGE') offRoast = [];
+    if (type === 'CHARGE' || offRoast.length) offRoast.push(e);
+    if (type === 'COOL') offRoast = [];  // finished without ever being switched on
+    return;
+  }
+  if (e.t < graph.start - 0.5) return;  // replayed from before this graph
   if (type === 'CHARGE') events = [];
   events.push(e);
   renderEvents();
@@ -405,7 +418,9 @@ function drawChart() {
   const inGraph = (ts) => started && ts >= graph.start - 0.5 && ts <= tEnd + 0.5;
   let x0 = 0, x1 = 300;
   if (roast) {
-    x0 = Math.min(0, Math.floor((graph.start - charge.t) / 30) * 30);
+    // Negative when the machine was switched on before CHARGE (preheat);
+    // positive when the beans went into a cold machine before power-on.
+    x0 = Math.floor((graph.start - charge.t) / 30) * 30;
     x1 = Math.max(720, Math.ceil((tEnd - charge.t + 60) / 120) * 120);
   } else if (started) {
     x1 = Math.max(x1, Math.ceil((tEnd - graph.start + 30) / 60) * 60);
