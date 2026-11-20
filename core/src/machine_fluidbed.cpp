@@ -65,7 +65,14 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
             heaterP = full * duty;
         }
         double fan = in.u[static_cast<int>(Control::Fan)];
-        fanFrac = (fan * 100.0 < P.fan_min_pct) ? 0.0 : fan;
+        const auto* fanControl = def_.control(Control::Fan);
+        if (fan > 0 && fanControl && fanControl->levels > 0) {
+            // Numbered settings span the fan's running range above its stall threshold.
+            const double minimum = clamp01(P.fan_min_pct / 100.0);
+            fanFrac = minimum + (1.0 - minimum) * fan;
+        } else {
+            fanFrac = (fan * 100.0 < P.fan_min_pct) ? 0.0 : fan;
+        }
     }
 
     // ---- air flow (mass flow drops with altitude and with hot intake air)

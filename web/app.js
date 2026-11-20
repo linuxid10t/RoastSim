@@ -14,7 +14,8 @@ const ENV_DEFAULTS = { ambient_C: 22, line_voltage: 120, source_ohms: 0.25, gas_
 
 let ws = null, reqId = 0, serverPollTimer;
 const pending = new Map();
-let state = null, def = null, defLoading = false;
+let state = null, def = null, defLoading = false, defRevision = 0;
+let catalog = null, catalogRequest = null;
 let history = [];          // rows: arrays in COLS order, kept since power-on
 let events = [];           // events of the current graph's roast
 let offRoast = [];         // roast charged while the machine is off (no graph yet)
@@ -126,12 +127,18 @@ async function pollServer(socket) {
 
 // ---------------------------------------------------------------- setup
 async function loadLists() {
-  const l = await send({ cmd: 'list' });
-  if (!l.ok) return false;
-  const fill = (sel, arr) => { sel.innerHTML = ''; for (const x of arr) sel.add(new Option(x.name, x.id)); };
-  fill($('roaster'), l.roasters || []);
-  fill($('bean'), l.beans || []);
-  return true;
+  if (!catalogRequest) catalogRequest = (async () => {
+    const l = await send({ cmd: 'list' });
+    if (!l.ok) return false;
+    catalog = l;
+    for (const [kind, items] of [['roaster', l.roasters], ['bean', l.beans]]) {
+      const select = $(kind), id = state?.[kind]?.id || select.value;
+      select.replaceChildren(...items.map(x => new Option(x.name, x.id)));
+      if (items.some(item => item.id === id)) select.value = id;
+    }
+    return true;
+  })().finally(() => { catalogRequest = null; });
+  return catalogRequest;
 }
 
 async function refreshDef() {
@@ -140,10 +147,11 @@ async function refreshDef() {
   defLoading = false;
   if (!s.roaster_def) return;
   def = s.roaster_def;
+  defRevision = s.roaster.revision;
   $('roaster').value = s.roaster.id;
   $('bean').value = s.bean.id;
   $('desc').textContent = def.description || '';
-  buildSliders();
+  buildSliders(s.controls);
   const fp = $('faultProbe'); fp.innerHTML = '';
   for (const p of def.probes) fp.add(new Option(p.label + ' (' + p.id + ')', p.id));
   if (s.units) units = s.units;
@@ -152,9 +160,16 @@ async function refreshDef() {
   return s;
 }
 
-function buildSliders() {
+function showControlLevel(input) {
+  const text = input.valueAsNumber === 0 ? 'Off' : `Level ${input.value}`;
+  input.nextElementSibling.textContent = text;
+  input.setAttribute('aria-valuetext', text);
+}
+
+function buildSliders(controls) {
   const box = $('sliders'), toggles = $('toggles');
   box.innerHTML = ''; toggles.innerHTML = '';
+  dragging.clear();
   for (const c of def.controls) {
     if (c.toggle) {  // e.g. the cooling tray fan: a checkbox next to Power, as in the native app
       const row = document.createElement('label'); row.className = 'check';
@@ -163,9 +178,26 @@ function buildSliders() {
       toggles.appendChild(row); continue;
     }
     const row = document.createElement('div'); row.className = 'slider';
-    row.innerHTML = `<span>${c.label}</span><input type="range" min="${c.min}" max="${c.max}" step="${c.step}" data-ctl="${c.id}"><output>0%</output>`;
+    const levels = c.levels || 0;
+    const id = `control-${c.id}`;
+    row.innerHTML = `<label for="${id}"></label><input type="range" id="${id}" data-ctl="${c.id}"><output for="${id}"></output>`;
+    row.firstElementChild.textContent = c.label;
     const input = row.querySelector('input'), out = row.querySelector('output');
-    input.oninput = () => { dragging.add(c.id); out.textContent = input.value + '%'; send({ cmd: 'set', control: c.id, value: +input.value }); };
+    input.min = levels ? 0 : c.min;
+    input.max = levels || c.max;
+    input.step = levels ? 1 : c.step;
+    input.dataset.levels = levels;
+    const value = controls[c.id]?.value ?? c.default;
+    input.value = levels ? Math.round(value * levels / 100) : value;
+    if (levels) showControlLevel(input);
+    else out.textContent = input.value + '%';
+    input.oninput = () => {
+      dragging.add(c.id);
+      if (levels) showControlLevel(input);
+      else out.textContent = input.value + '%';
+      const value = input.valueAsNumber;
+      send({ cmd: 'set', control: c.id, value: levels ? 100 * value / levels : value });
+    };
     input.onchange = () => dragging.delete(c.id);
     box.appendChild(row);
   }
@@ -300,10 +332,12 @@ function onState(s) {
     if (history.length > 20000) history.splice(0, history.length - 20000);
   }
   state = s;
+  $('mEditRoaster').disabled = !s.roaster.custom;
+  if (s.catalog_revision !== catalog?.catalog_revision) loadLists();
   // Machine already on with no power-on in the event log (e.g. switched on
   // before the last cold reset): the graph starts with the oldest sample.
   if (s.power && graph.start < 0 && eventSeq >= s.event_seq) startGraph(history.length ? history[0][0] : s.t);
-  if (def?.id !== s.roaster.id && !defLoading) refreshDef();
+  if ((def?.id !== s.roaster.id || defRevision !== s.roaster.revision) && !defLoading) refreshDef();
   $('bean').value = s.bean.id;
   if (s.units && JSON.stringify(s.units) !== unitKey) {  // changed here or in another front end
     units = s.units;
@@ -326,8 +360,14 @@ function onState(s) {
     const c = s.controls[el.dataset.ctl]; if (!c) continue;
     if (el.type === 'checkbox') el.checked = c.value >= 50;
     else if (!dragging.has(el.dataset.ctl) && document.activeElement !== el) {
-      el.value = c.value;
-      el.nextElementSibling.textContent = Math.abs(c.actual - c.value) > 0.5 ? `${c.actual.toFixed(0)}→${c.value.toFixed(0)}` : c.value.toFixed(0) + '%';
+      const levels = +el.dataset.levels;
+      if (levels) {
+        el.value = Math.round(c.value * levels / 100);
+        showControlLevel(el);
+      } else {
+        el.value = c.value;
+        el.nextElementSibling.textContent = Math.abs(c.actual - c.value) > 0.5 ? `${c.actual.toFixed(0)}→${c.value.toFixed(0)}` : c.value.toFixed(0) + '%';
+      }
     }
   }
   $('power').checked = !!s.power;
@@ -573,7 +613,6 @@ async function showReport() {
   const r = await send({ cmd: 'report' });
   if (!r.valid) { alert('No roast yet. Charge some beans first.'); return; }
   $('reportBody').innerHTML = `
-    <p><b>${r.roaster}</b><br>${r.bean}</p>
     <table>
       <tr><td>Batch → out</td><td>${fmtW(r.batch_g)} → ${fmtW(r.out_g)} ${units.weight} (${r.weight_loss_pct}% loss)</td></tr>
       <tr><td>Moisture</td><td>${r.moisture_pct}%</td></tr>
@@ -585,6 +624,10 @@ async function showReport() {
       <tr><td>RoR max / FC / drop</td><td>${R(r.max_ror).toFixed(1)} / ${R(r.ror_at_fcs).toFixed(1)} / ${R(r.ror_at_drop).toFixed(1)} ${TU()}/min</td></tr>
     </table>
     <ul>${r.notes.map(n => `<li>${n}</li>`).join('')}</ul>`;
+  const title = document.createElement('p'), machine = document.createElement('b');
+  machine.textContent = r.roaster;
+  title.append(machine, document.createElement('br'), r.bean);
+  $('reportBody').prepend(title);
   if (!$('reportDlg').open) $('reportDlg').showModal();
 }
 
@@ -642,6 +685,191 @@ async function setSpeed(v) {
 }
 
 // ---------------------------------------------------------------- dialogs
+let presetDraft = null;
+
+function presetSource(draft) {
+  return draft.kind === 'roaster' && draft.mode === 'create' ? { roaster_type: draft.id } : { id: draft.id };
+}
+
+async function openPreset(kind, mode) {
+  if (!state || $('presetDlg').open || (kind === 'roaster' && mode === 'edit' && !state.roaster.custom)) return;
+  let options = [];
+  let id = state[kind].id;
+  if (mode === 'create') {
+    if (kind === 'roaster') {
+      const result = await act({ cmd: 'preset_types' });
+      if (!result.ok) return;
+      options = result.types;
+      id = options[0]?.id;
+    } else {
+      if (!await loadLists()) return;
+      options = catalog.beans;
+    }
+  }
+  if (!id || $('presetDlg').open) return;
+  const draft = { kind, mode, id, options, loaded: '', form: null, page: mode === 'create' ? -1 : 0,
+                  changes: Object.create(null), inputs: [] };
+  presetDraft = draft;
+  $('presetTitle').textContent = `${mode === 'create' ? 'New' : 'Edit'} ${kind} preset`;
+  $('presetDlg').showModal();
+  renderPresetPage();
+  if (mode === 'edit') await readPresetForm(draft);
+}
+
+async function readPresetForm(draft) {
+  $('presetNext').disabled = true;
+  const form = await send({ cmd: 'preset_form', kind: draft.kind, mode: draft.mode, ...presetSource(draft) });
+  if (presetDraft !== draft) return;
+  if (!form.ok) {
+    $('presetError').textContent = form.error;
+    $('presetNext').disabled = draft.mode === 'edit';
+    return;
+  }
+  draft.form = form;
+  draft.loaded = draft.id;
+  draft.changes = Object.create(null);
+  if (draft.mode === 'create') draft.changes.name = '';
+  else if (!form.custom) draft.changes.name = form.sections[0].fields[0].value.slice(0, 100) + ' (custom)';
+  draft.page = 0;
+  renderPresetPage();
+}
+
+function renderPresetPage() {
+  const draft = presetDraft;
+  const creating = draft.mode === 'create', onTemplate = draft.page < 0;
+  const fields = $('presetFields'), tabs = $('presetTabs'), next = $('presetNext');
+  const sectionHeading = $('presetSection');
+  fields.replaceChildren();
+  tabs.replaceChildren();
+  tabs.hidden = creating || !draft.form;
+  sectionHeading.hidden = !creating;
+  draft.inputs = [];
+  $('presetError').textContent = '';
+  $('presetBack').hidden = !creating;
+  $('presetBack').disabled = onTemplate;
+  $('presetCancel').disabled = false;
+  next.disabled = false;
+  next.textContent = creating && (onTemplate || draft.page < draft.form.sections.length - 1) ? 'Next' : 'Save';
+  const addInput = (label, control, id) => {
+    const caption = document.createElement('label');
+    caption.textContent = label;
+    control.id = id;
+    caption.htmlFor = id;
+    fields.append(caption, control);
+  };
+  if (onTemplate) {
+    const roaster = draft.kind === 'roaster';
+    sectionHeading.textContent = roaster ? 'Choose a basic roaster type' : 'Starting preset';
+    $('presetHelp').textContent = roaster ? '' : 'Choose a similar bean to start from.';
+    const select = document.createElement('select');
+    select.replaceChildren(...draft.options.map(x => new Option(x.name, x.id)));
+    select.value = draft.id;
+    addInput(roaster ? 'Machine type' : 'Template', select, 'presetTemplate');
+    if (roaster) {
+      const detail = document.createElement('p');
+      detail.id = 'presetTypeDetail';
+      detail.className = 'desc preset-type-detail';
+      const describeType = () => { detail.textContent = draft.options[select.selectedIndex]?.description || ''; };
+      select.setAttribute('aria-describedby', detail.id);
+      select.addEventListener('change', describeType);
+      describeType();
+      fields.append(detail);
+    }
+    $('presetContent').scrollTop = 0;
+    select.focus();
+    return;
+  }
+  if (!draft.form) {
+    $('presetHelp').textContent = 'Loading preset…';
+    next.disabled = true;
+    return;
+  }
+  const sections = draft.form.sections;
+  $('presetHelp').textContent = creating ? `Step ${draft.page + 2} of ${sections.length + 1}` :
+    draft.form.custom ? 'Changes are saved to this custom preset.' : 'Saving creates a custom copy.';
+  sectionHeading.textContent = sections[draft.page].title;
+  if (!creating) for (const [i, section] of sections.entries()) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.textContent = section.title;
+    tab.setAttribute('aria-pressed', i === draft.page);
+    tab.onclick = () => { if (readPresetPage()) { draft.page = i; renderPresetPage(); } };
+    tabs.append(tab);
+  }
+  for (const [i, field] of sections[draft.page].fields.entries()) {
+    const input = document.createElement('input');
+    input.required = field.key === 'name' || typeof field.value === 'number';
+    if (typeof field.value === 'number') {
+      input.type = 'number'; input.min = field.min; input.max = field.max; input.step = field.whole ? 1 : 'any';
+    } else input.maxLength = field.limit;
+    input.value = draft.changes[field.key] ?? field.value;
+    addInput(field.label, input, `presetField${i}`);
+    draft.inputs.push([field, input]);
+  }
+  $('presetContent').scrollTop = 0;
+  draft.inputs[0]?.[1].focus({ preventScroll: true });
+}
+
+function readPresetPage(validate = true) {
+  const draft = presetDraft;
+  for (const [field, input] of draft.inputs) {
+    if (validate && (!input.validity.valid || (field.key === 'name' && !input.value.trim()))) {
+      $('presetError').textContent = field.key === 'name' ? 'Enter a preset name.' :
+        `${field.label} must be ${field.whole ? 'a whole number ' : ''}between ${field.min} and ${field.max}.`;
+      input.focus();
+      return false;
+    }
+    const value = input.type === 'number' ? input.valueAsNumber : input.value;
+    if (input.type === 'number' && !Number.isFinite(value)) continue;
+    if (value === field.value && !(draft.mode === 'create' && field.key === 'name')) delete draft.changes[field.key];
+    else draft.changes[field.key] = value;
+  }
+  return true;
+}
+
+$('presetBack').onclick = () => {
+  readPresetPage(false);
+  presetDraft.page--;
+  renderPresetPage();
+};
+$('presetCancel').onclick = () => $('presetDlg').close();
+$('presetDlg').addEventListener('cancel', event => { if (presetDraft?.saving) event.preventDefault(); });
+$('presetDlg').addEventListener('close', () => { presetDraft = null; });
+$('presetForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const draft = presetDraft;
+  if (!draft || draft.saving || $('presetNext').disabled) return;
+  if (draft.page < 0) {
+    draft.id = $('presetTemplate').value;
+    if (draft.loaded === draft.id) { draft.page = 0; renderPresetPage(); }
+    else await readPresetForm(draft);
+    return;
+  }
+  if (!readPresetPage()) return;
+  if (draft.mode === 'create' && draft.page + 1 < draft.form.sections.length) {
+    draft.page++; renderPresetPage(); return;
+  }
+  draft.saving = true;
+  for (const control of $('presetForm').elements) control.disabled = true;
+  const r = await send({ cmd: 'preset_save', mode: draft.mode, kind: draft.kind, ...presetSource(draft),
+                         revision: draft.form.revision, changes: draft.changes });
+  if (!r.ok) {
+    draft.saving = false;
+    for (const control of $('presetForm').elements) control.disabled = false;
+    $('presetBack').disabled = draft.page < 0;
+    $('presetError').textContent = r.error;
+    return;
+  }
+  $('presetDlg').close();
+  await loadLists();
+  const notice = $('presetNotice');
+  notice.textContent = `Saved ${r.name}. ` + (draft.kind === 'roaster' && state?.roaster.id === r.id ?
+    'Reload the roaster preset to use the changes.' : `Available in the ${draft.kind} list.`);
+  notice.hidden = false;
+});
+for (const button of document.querySelectorAll('[data-preset-kind]'))
+  button.onclick = () => openPreset(button.dataset.presetKind, button.dataset.presetMode);
+
 function fillEnv(e) {
   $('env_ambient').value = num(T(e.ambient_C), 0.1);
   $('env_volts').value = num(e.line_voltage, 0.1);

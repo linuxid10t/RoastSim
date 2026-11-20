@@ -43,6 +43,7 @@ void usage() {
         "  --time-scale X       simulation speed when no logger is connected (default 1)\n"
         "  --seed N             random seed (default: random)\n"
         "  --data DIR, --web DIR  resource directories\n"
+        "  --presets DIR        custom preset storage directory\n"
         "  --script FILE        run a scripted roast as fast as possible, print the report, exit\n"
         "  --list               list roaster and bean presets\n"
         "  --quiet              no periodic status line\n"
@@ -243,6 +244,7 @@ int main(int argc, char** argv) {
         else if (a == "--seed") cfg.seed = std::strtoull(next().c_str(), nullptr, 10);
         else if (a == "--data") cfg.data_dir = next();
         else if (a == "--web") cfg.web_dir = next();
+        else if (a == "--presets") cfg.presets_dir = next();
         else if (a == "--script") script = next();
         else if (a == "--list") list = true;
         else if (a == "--quiet") quiet = true;

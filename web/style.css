@@ -120,3 +120,30 @@ dialog ul { padding-left: 18px; }
 .buttons { display: flex; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 8px; }
 .buttons .spacer { flex: 1; }
 .error { color: var(--warn); min-height: 1.2em; margin: 0; font-size: 13px; }
+
+html:has(#presetDlg[open]) { overflow: hidden; }
+#presetDlg { --preset-padding-block: 18px; width: min(560px, calc(100% - 24px)); max-width: none;
+             max-height: calc(100dvh - 24px); padding-block: var(--preset-padding-block); overflow: hidden; }
+#presetForm { display: flex; flex-direction: column; max-height: calc(100dvh - 26px - var(--preset-padding-block) * 2); }
+#presetHelp:empty { display: none; }
+#presetSection { margin: 0 0 8px; font-size: 14px; }
+.preset-content { min-height: 0; overflow: auto; padding: 8px 4px 4px; margin: 0 -4px; }
+.preset-fields { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px 12px; align-items: center; }
+.preset-fields input, .preset-fields select { width: 100%; min-width: 0; }
+.preset-type-detail { grid-column: 1 / -1; margin: 0; }
+.preset-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.preset-tabs button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.preset-tabs[hidden] { display: none; }
+#presetError { min-height: 0; }
+#presetError:not(:empty) { margin-top: 6px; }
+#presetForm .buttons { flex-shrink: 0; }
+#presetForm .buttons button { min-width: 64px; }
+
+@media (max-width: 480px) {
+  .menubar { position: relative; }
+  .preset-menu { position: static; }
+  .preset-menu .items { left: auto; right: 0; }
+  #presetDlg { --preset-padding-block: 14px; padding-inline: 16px; }
+  .preset-fields { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .preset-fields label:not(:first-child) { margin-top: 3px; }
+}

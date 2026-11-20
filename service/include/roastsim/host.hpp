@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -50,6 +51,7 @@ struct ArtisanWsConfig {
 struct HostConfig {
     std::string data_dir;        // empty: auto-detect "data"
     std::string web_dir;         // empty: auto-detect "web"
+    std::string presets_dir;     // empty: the user's RoastSim data directory
     std::string bind_address = "127.0.0.1";  // "0.0.0.0" to serve the LAN
     bool http_enabled = true;
     int http_port = 8080;        // web UI + JSON API + WebSocket (Artisan and UI)
@@ -131,11 +133,16 @@ public:
 
 private:
     void simLoop();
+    void loadUserPresets();
+    json::Value presetCommand(const json::Value& cmd);
     json::Value describeServers() const;
 
     HostConfig cfg_;
     Catalog catalog_;
     mutable std::mutex mu_;
+    std::set<std::string> userRoasters_, userBeans_;
+    std::uint64_t catalogRevision_ = 0;
+    std::uint64_t roasterRevision_ = 0;
     Simulation sim_;
     double batchG_ = 0;           // batch size for the next charge
     double timeScale_ = 1.0;

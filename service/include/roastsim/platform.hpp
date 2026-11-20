@@ -88,5 +88,8 @@ std::string executableDir();
 // Finds a directory named `name` next to the executable, in the working
 // directory, or a few levels up (for running from a build tree).
 std::string findResourceDir(const std::string& name);
+std::string userPresetDir();
+// Atomically save a preset. A null previous value means create a new file.
+bool writePreset(const std::string& path, const std::string& contents, const std::string* previous, std::string* err);
 
 }  // namespace roastsim::platform

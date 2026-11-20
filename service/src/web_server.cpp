@@ -38,6 +38,7 @@ struct Conn {
     bool dead = false;
     bool subscribed = false;       // UI wants periodic state
     bool artisan = false;          // speaks Artisan's dialect
+    bool canSavePresets = false;
     double lastPush = 0;
     std::uint64_t eventSeq = 0;
     std::uint64_t historyNext = 0;
@@ -55,6 +56,26 @@ double nowSeconds() {
 std::string lower(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+bool trustedPresetOrigin(const std::map<std::string, std::string>& headers, const std::string& bindAddress) {
+    const auto origin = headers.find("origin");
+    if (origin == headers.end()) return true;  // native API clients have no browser origin
+    const auto host = headers.find("host");
+    if (host == headers.end() || host->second.empty()) return false;
+    const std::string authority = lower(host->second);
+    const std::string from = lower(origin->second);
+    if (from != "http://" + authority && from != "https://" + authority) return false;
+    if (bindAddress != "localhost" && bindAddress.compare(0, 4, "127.") != 0) return true;
+    const std::string hostname = authority.substr(0, authority.find(':'));
+    return hostname == "localhost" || hostname == (bindAddress == "localhost" ? "127.0.0.1" : bindAddress);
+}
+
+json::Value presetOriginError() {
+    json::Value response = json::Value::object();
+    response["ok"] = false;
+    response["error"] = "Open the RoastSim control panel to save a preset.";
+    return response;
 }
 
 std::string mimeFor(const std::string& path) {
@@ -196,7 +217,9 @@ void NetServer::Impl::handleWsMessage(Conn& c, const std::string& text) {
         }
         std::string cmd = msg.get("cmd", "");
         json::Value reply;
-        if (cmd == "audio") {
+        if (cmd == "preset_save" && !c.canSavePresets) {
+            reply = presetOriginError();
+        } else if (cmd == "audio") {
             // {"cmd":"audio","value":true,"rate":24000} starts the sound stream; false stops it.
             reply = json::Value::object();
             if (msg.getBool("value", true)) {
@@ -328,6 +351,7 @@ void NetServer::Impl::handleHttp(Conn& c) {
                  "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
         // No Sec-WebSocket-Extensions in the reply: permessage-deflate is declined.
         c.kind = ConnKind::WebSocket;
+        c.canSavePresets = trustedPresetOrigin(headers, host.config().bind_address);
         c.eventSeq = host.snapshot().last_event_seq;  // only push events from now on
         if (!c.in.empty()) handleWsData(c);
         return;
@@ -346,11 +370,13 @@ void NetServer::Impl::handleHttp(Conn& c) {
     } else if (path == "/api/command" && method == "POST") {
         std::string err;
         json::Value cmd = json::Value::parse(body, &err);
-        json::Value r = err.empty() ? host.command(cmd, cmd.get("origin", "http")) : json::Value::object();
+        json::Value r = json::Value::object();
         if (!err.empty()) {
             r["ok"] = false;
             r["error"] = "bad JSON: " + err;
-        }
+        } else if (cmd.get("cmd", "") == "preset_save" && !trustedPresetOrigin(headers, host.config().bind_address))
+            r = presetOriginError();
+        else r = host.command(cmd, cmd.get("origin", "http"));
         c.out += httpResponse(200, "OK", "application/json", r.dump());
     } else if (method == "GET" || method == "HEAD") {
         std::string rel = path == "/" ? "index.html" : path.substr(1);

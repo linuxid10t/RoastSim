@@ -9,6 +9,18 @@ namespace fs = std::filesystem;
 
 namespace roastsim {
 
+namespace {
+template <typename Preset>
+void putPreset(std::vector<Preset>& presets, Preset preset) {
+    auto existing = std::find_if(presets.begin(), presets.end(), [&](const auto& p) { return p.id == preset.id; });
+    if (existing == presets.end()) presets.push_back(std::move(preset));
+    else *existing = std::move(preset);
+}
+}
+
+void Catalog::putRoaster(RoasterDef def) { putPreset(roasters_, std::move(def)); }
+void Catalog::putBean(BeanSpec spec) { putPreset(beans_, std::move(spec)); }
+
 bool readTextFile(const std::string& path, std::string& out) {
     std::ifstream f(fs::u8path(path), std::ios::binary);
     if (!f) return false;
@@ -27,10 +39,7 @@ bool Catalog::addRoasterJson(const std::string& text, std::string* err) {
     }
     RoasterDef d;
     if (!RoasterDef::fromJson(v, d, err)) return false;
-    roasters_.erase(std::remove_if(roasters_.begin(), roasters_.end(),
-                                   [&](const RoasterDef& r) { return r.id == d.id; }),
-                    roasters_.end());
-    roasters_.push_back(std::move(d));
+    putRoaster(std::move(d));
     return true;
 }
 
@@ -45,10 +54,7 @@ bool Catalog::addBeanJson(const std::string& text, std::string* err) {
         if (err) *err = "bean definition needs an \"id\"";
         return false;
     }
-    BeanSpec b = BeanSpec::fromJson(v);
-    beans_.erase(std::remove_if(beans_.begin(), beans_.end(), [&](const BeanSpec& x) { return x.id == b.id; }),
-                 beans_.end());
-    beans_.push_back(std::move(b));
+    putBean(BeanSpec::fromJson(v));
     return true;
 }
 

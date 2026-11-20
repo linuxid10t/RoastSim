@@ -3,6 +3,7 @@
 
 #define IDD_ENVIRONMENT 100
 #define IDD_PREHEAT 101
+#define IDD_PRESET 102
 
 // Environment dialog
 #define IDC_ENV_AMBIENT 1001
@@ -19,3 +20,13 @@
 // Preheat dialog
 #define IDC_PRE_TARGET 1101
 #define IDC_PRE_UNIT 1102
+
+// Preset creator and editor
+#define IDC_PRESET_HELP 1200
+#define IDC_PRESET_SECTION 1201
+#define IDC_PRESET_CHOICES 1202
+#define IDC_PRESET_ERROR 1203
+#define IDC_PRESET_BACK 1204
+#define IDC_PRESET_DETAIL 1205
+#define IDC_PRESET_LABEL0 1210
+#define IDC_PRESET_FIELD0 1220

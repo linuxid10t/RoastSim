@@ -19,7 +19,16 @@ struct ControlDef {
     double min = 0, max = 100, step = 1;
     bool toggle = false;      // on/off switch rather than a slider
     double slew_per_s = 0;    // 0 = instant, else max change in % per second (e.g. gas valves)
+    int levels = 0;           // 0 = percent slider, otherwise Off and levels 1 through N
+
+    bool supportsLevels() const;
+    double snapToLevel(double percent) const;
 };
+
+constexpr int kMaxControlLevels = 100;
+// Convert between numbered positions and the percentage used by the simulator.
+int controlLevel(double percent, int levels);
+double levelPercent(int level, int levels);
 
 struct ProbeDef {
     std::string id;           // "BT", "ET", "Inlet", ...

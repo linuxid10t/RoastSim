@@ -96,6 +96,7 @@ struct BeanSpec {
     double green_rgb[3] = {0.46, 0.52, 0.34};
     double bulk_density = 700.0;     // kg/m^3 of the green pile; JSON default = density
     Kinetics kinetics;
+    json::Value raw;                 // original definition, including advanced settings
 
     static BeanSpec fromJson(const json::Value& v);
     json::Value toJson() const;

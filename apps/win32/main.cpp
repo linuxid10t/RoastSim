@@ -61,6 +61,7 @@ enum : int {
     IDM_TEMP_C = 1100, IDM_TEMP_F, IDM_W_G, IDM_W_KG, IDM_W_OZ, IDM_W_LB, IDM_ALT_M, IDM_ALT_FT,
     IDM_SPEED0 = 1200,  // + index into kSpeeds
     IDM_SOUND = 1220, IDM_VOL0,  // + index into kVolumes
+    IDM_BEAN_NEW = 1240, IDM_BEAN_EDIT, IDM_ROASTER_NEW, IDM_ROASTER_EDIT,
 };
 enum : UINT_PTR { TIMER_UI = 1 };
 constexpr UINT WM_APP_ROAST_DONE = WM_APP + 1;  // posted when COOL arrives: power off, show report
@@ -84,6 +85,16 @@ std::wstring widen(const std::string& s) {
     std::wstring w(static_cast<size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), &w[0], n);
     return w;
+}
+
+std::string narrow(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int length = static_cast<int>(w.size());
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), length, nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string s(static_cast<std::size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), length, &s[0], n, nullptr, nullptr);
+    return s;
 }
 
 std::wstring getText(HWND h) {
@@ -147,6 +158,7 @@ struct App {
     int nextMark = -1;       // index into kMarkEvents the Mark button sends, -1 = none
     HWND coolCheck, powerCheck;
     HWND sliders[kSliderCount], sliderLabels[kSliderCount], sliderValues[kSliderCount];
+    int sliderLevels[kSliderCount] = {};
     bool dragging[kSliderCount] = {};
     HMENU menuBar = nullptr, speedMenu = nullptr;
     std::wstring readoutText;
@@ -163,6 +175,8 @@ struct App {
     std::vector<std::string> roasterIds, beanIds;
     Value roasterDef;
     std::string currentRoaster;
+    bool currentRoasterCustom = false;
+    double catalogRevision = 0, roasterRevision = 0;
 
     rs_state st{};
     // The graph covers one session: it starts when the machine is switched on
@@ -477,6 +491,14 @@ void invalidateRight() {
     InvalidateRect(g.wnd, &rc, FALSE);
 }
 
+void selectPreset(HWND combo, const std::vector<std::string>& ids, const std::string& id) {
+    auto it = std::find(ids.begin(), ids.end(), id);
+    if (it != ids.end()) {
+        const auto index = static_cast<int>(it - ids.begin());
+        if (SendMessageW(combo, CB_GETCURSEL, 0, 0) != index) SendMessageW(combo, CB_SETCURSEL, index, 0);
+    }
+}
+
 void applyRoasterDef() {
     Value st = Value::object();
     st["cmd"] = "state";
@@ -484,8 +506,11 @@ void applyRoasterDef() {
     Value s = command(st);
     g.roasterDef = s["roaster_def"];
     g.currentRoaster = s["roaster"].get("id", "");
+    g.currentRoasterCustom = s["roaster"].getBool("custom", false);
+    g.roasterRevision = s["roaster"].get("revision", 0.0);
     setText(g.desc, widen(g.roasterDef.get("description", "")));
     for (int i = 0; i < kSliderCount; ++i) {
+        g.dragging[i] = false;
         ShowWindow(g.sliders[i], SW_HIDE);
         ShowWindow(g.sliderLabels[i], SW_HIDE);
         ShowWindow(g.sliderValues[i], SW_HIDE);
@@ -495,9 +520,15 @@ void applyRoasterDef() {
         std::string id = c.get("id", "");
         for (int i = 0; i < kSliderCount; ++i) {
             if (id != names[i]) continue;
-            SendMessageW(g.sliders[i], TBM_SETRANGE, TRUE,
-                         MAKELPARAM(static_cast<int>(c.get("min", 0.0)), static_cast<int>(c.get("max", 100.0))));
-            SendMessageW(g.sliders[i], TBM_SETPAGESIZE, 0, 10);
+            const int levels = static_cast<int>(c.get("levels", 0.0));
+            g.sliderLevels[i] = levels;
+            const int min = levels ? 0 : static_cast<int>(c.get("min", 0.0));
+            const int max = levels ? levels : static_cast<int>(c.get("max", 100.0));
+            SendMessageW(g.sliders[i], TBM_SETRANGE, TRUE, MAKELPARAM(min, max));
+            SendMessageW(g.sliders[i], TBM_SETPAGESIZE, 0, levels ? 1 : 10);
+            const double value = s["controls"][id].get("value", c.get("default", 0.0));
+            const auto pos = levels ? roastsim::controlLevel(value, levels) : std::lround(value);
+            SendMessageW(g.sliders[i], TBM_SETPOS, TRUE, static_cast<LPARAM>(pos));
             setText(g.sliderLabels[i], widen(c.get("label", id.c_str())));
             ShowWindow(g.sliders[i], SW_SHOW);
             ShowWindow(g.sliderLabels[i], SW_SHOW);
@@ -505,17 +536,16 @@ void applyRoasterDef() {
         }
     }
     SetWindowTextW(g.batchEdit, fmtW(s.get("next_batch_g", 100.0)).c_str());
-    for (size_t i = 0; i < g.roasterIds.size(); ++i)
-        if (g.roasterIds[i] == g.currentRoaster) SendMessageW(g.roasterCombo, CB_SETCURSEL, i, 0);
-    std::string bean = s["bean"].get("id", "");
-    for (size_t i = 0; i < g.beanIds.size(); ++i)
-        if (g.beanIds[i] == bean) SendMessageW(g.beanCombo, CB_SETCURSEL, i, 0);
+    selectPreset(g.roasterCombo, g.roasterIds, g.currentRoaster);
+    selectPreset(g.beanCombo, g.beanIds, s["bean"].get("id", ""));
     g.beanX.clear();
     invalidateRight();
 }
 
 void populateLists() {
     Value l = cmd1("list");
+    if (!l.getBool("ok", false)) return;
+    g.catalogRevision = l.get("catalog_revision", 0.0);
     SendMessageW(g.roasterCombo, CB_RESETCONTENT, 0, 0);
     SendMessageW(g.beanCombo, CB_RESETCONTENT, 0, 0);
     g.roasterIds.clear();
@@ -567,6 +597,7 @@ void updateMenus() {
     CheckMenuRadioItem(m, IDM_VOL0, IDM_VOL0 + kVolumeCount - 1, IDM_VOL0 + vi, MF_BYCOMMAND);
     CheckMenuItem(m, IDM_SOUND, MF_BYCOMMAND | (g.soundOn ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m, IDM_POWER, MF_BYCOMMAND | (g.st.powered ? MF_CHECKED : MF_UNCHECKED));
+    EnableMenuItem(m, IDM_ROASTER_EDIT, MF_BYCOMMAND | (g.currentRoasterCustom ? MF_ENABLED : MF_GRAYED));
     // Each event can be marked once per roast; marked ones show a check.
     for (int i = 0; i < kMarkCount; ++i) {
         bool done = eventTime(kMarkEvents[i]) >= 0;
@@ -659,15 +690,22 @@ void layout() {
 }
 
 // ---------------------------------------------------------------- refresh
+std::wstring sliderLevelText(int position) { return position == 0 ? L"Off" : fmt(L"Level %d", position); }
+
 void syncSliders() {
     for (int i = 0; i < kSliderCount; ++i) {
         if (!IsWindowVisible(g.sliders[i])) continue;
         double v = g.st.controls[kSliderControls[i]];
+        int levels = g.sliderLevels[i];
+        auto position = levels ? roastsim::controlLevel(v, levels) : std::lround(v);
         if (!g.dragging[i] && GetFocus() != g.sliders[i] &&
-            SendMessageW(g.sliders[i], TBM_GETPOS, 0, 0) != std::lround(v))
-            SendMessageW(g.sliders[i], TBM_SETPOS, TRUE, static_cast<LPARAM>(std::lround(v)));
-        double act = g.st.actuators[kSliderControls[i]];
-        setText(g.sliderValues[i], std::fabs(act - v) > 0.5 ? fmt(L"%.0f→%.0f", act, v) : fmt(L"%.0f%%", v));
+            SendMessageW(g.sliders[i], TBM_GETPOS, 0, 0) != position)
+            SendMessageW(g.sliders[i], TBM_SETPOS, TRUE, static_cast<LPARAM>(position));
+        if (levels) setText(g.sliderValues[i], sliderLevelText(static_cast<int>(position)));
+        else {
+            double act = g.st.actuators[kSliderControls[i]];
+            setText(g.sliderValues[i], std::fabs(act - v) > 0.5 ? fmt(L"%.0f→%.0f", act, v) : fmt(L"%.0f%%", v));
+        }
     }
     LRESULT cool = g.st.controls[RS_CTL_COOLING] >= 50 ? BST_CHECKED : BST_UNCHECKED;
     if (SendMessageW(g.coolCheck, BM_GETCHECK, 0, 0) != cool) SendMessageW(g.coolCheck, BM_SETCHECK, cool, 0);
@@ -841,10 +879,18 @@ void refresh() {
     if (++slow % 5 == 1) {
         // Another front end (web UI, Artisan, console) may have loaded a different roaster.
         Value cur = cmd1("state");
-        if (cur["roaster"].get("id", "") != g.currentRoaster) {
+        const auto toolRoaster = cur["roaster"].get("id", "");
+        if (cur.get("catalog_revision", 0.0) != g.catalogRevision &&
+            !SendMessageW(g.roasterCombo, CB_GETDROPPEDSTATE, 0, 0) && !SendMessageW(g.beanCombo, CB_GETDROPPEDSTATE, 0, 0)) {
+            populateLists();
+            selectPreset(g.roasterCombo, g.roasterIds, toolRoaster);
+        }
+        if (toolRoaster != g.currentRoaster || cur["roaster"].get("revision", 0.0) != g.roasterRevision) {
             applyRoasterDef();
             layout();
         }
+        if (!SendMessageW(g.beanCombo, CB_GETDROPPEDSTATE, 0, 0))
+            selectPreset(g.beanCombo, g.beanIds, cur["bean"].get("id", ""));
         Value info = cmd1("server");
         setStatus(SB_MODBUS, L"Modbus " + widen(info["net"].get("modbus", "off")));
         setStatus(SB_WEB, L"Web/WS " + widen(info["net"].get("http", "off")));
@@ -1199,8 +1245,265 @@ bool readNumber(HWND dlg, int id, double& out) {
     std::wstring s = getText(GetDlgItem(dlg, id));
     wchar_t* end = nullptr;
     out = std::wcstod(s.c_str(), &end);
+    if (end == s.c_str()) return false;
     while (end && *end == L' ') ++end;
     return !s.empty() && end && *end == 0 && std::isfinite(out);
+}
+
+// Both the creator and editor use the fields returned by the host.
+struct PresetDraft {
+    std::string kind, id, loadedId;
+    bool creating = false;
+    int page = 0;
+    Value templates, form, saved;
+    Value changes = Value::object();
+
+    bool startsFromType() const { return creating && kind == "roaster"; }
+    void setSource(Value& cmd) const {
+        cmd["kind"] = kind;
+        cmd["mode"] = creating ? "create" : "edit";
+        cmd[startsFromType() ? "roaster_type" : "id"] = id;
+    }
+};
+
+constexpr int kPresetRows = 7;
+
+bool loadPresetForm(PresetDraft& d, std::string& error) {
+    Value c = Value::object();
+    c["cmd"] = "preset_form";
+    d.setSource(c);
+    Value result = command(c);
+    if (!result.getBool("ok", false)) {
+        error = result.get("error", "Could not open the preset.");
+        return false;
+    }
+    d.form = std::move(result);
+    d.loadedId = d.id;
+    d.page = 0;
+    d.changes = Value::object();
+    if (d.creating) d.changes["name"] = "";
+    else if (!d.form.getBool("custom", false)) {
+        std::wstring name = widen(d.form["sections"].at(0)["fields"].at(0).get("value", ""));
+        if (name.size() > 50) name.resize(50);
+        d.changes["name"] = narrow(name + L" (custom)");
+    }
+    return true;
+}
+
+// These positions match the full-height layout in IDD_PRESET.
+void fitPresetPage(HWND dlg, int rows) {
+    const int heightRemoved = (kPresetRows - rows) * 18;
+    auto moveY = [&](int id, int y) {
+        HWND control = GetDlgItem(dlg, id);
+        RECT rect{};
+        GetWindowRect(control, &rect);
+        POINT position{rect.left, rect.top};
+        ScreenToClient(dlg, &position);
+        RECT offset{0, 0, 0, y - heightRemoved};
+        MapDialogRect(dlg, &offset);
+        SetWindowPos(control, nullptr, position.x, offset.bottom, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+    moveY(IDC_PRESET_ERROR, 180);
+    for (int id : {IDC_PRESET_BACK, IDCANCEL, IDOK}) moveY(id, 204);
+    RECT window{}, client{}, target{0, 0, 0, 227 - heightRemoved};
+    GetWindowRect(dlg, &window);
+    GetClientRect(dlg, &client);
+    MapDialogRect(dlg, &target);
+    SetWindowPos(dlg, nullptr, 0, 0, window.right - window.left, window.bottom - window.top - client.bottom + target.bottom,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void showPresetTypeDetail(HWND dlg, const PresetDraft& d, int index) {
+    SetDlgItemTextW(dlg, IDC_PRESET_DETAIL, widen(d.templates.at(index).get("description", "")).c_str());
+}
+
+void showPresetPage(HWND dlg, const PresetDraft& d) {
+    const bool onTemplate = d.page < 0;
+    const auto& sections = d.form["sections"];
+    HWND choices = GetDlgItem(dlg, IDC_PRESET_CHOICES);
+    const bool keepSectionFocus = !d.creating && GetFocus() == choices;
+    ShowWindow(choices, onTemplate || !d.creating ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(dlg, IDC_PRESET_DETAIL), onTemplate && d.startsFromType() ? SW_SHOW : SW_HIDE);
+    SetDlgItemTextW(dlg, IDC_PRESET_ERROR, L"");
+    ShowWindow(GetDlgItem(dlg, IDC_PRESET_BACK), d.creating ? SW_SHOW : SW_HIDE);
+    EnableWindow(GetDlgItem(dlg, IDC_PRESET_BACK), !onTemplate);
+    const bool last = !onTemplate && d.page + 1 >= static_cast<int>(sections.size());
+    SetDlgItemTextW(dlg, IDOK, d.creating && !last ? L"Next" : L"Save");
+    if (onTemplate) {
+        SendMessageW(choices, CB_RESETCONTENT, 0, 0);
+        SetDlgItemTextW(dlg, IDC_PRESET_HELP, d.startsFromType() ?
+                        L"Choose a basic roaster type." : L"Choose a similar bean to start from.");
+        SetDlgItemTextW(dlg, IDC_PRESET_SECTION, d.startsFromType() ? L"Machine type" : L"Template");
+        int selected = 0, index = 0;
+        for (const auto& preset : d.templates.items()) {
+            SendMessageW(choices, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(preset.get("name", "")).c_str()));
+            if (preset.get("id", "") == d.id) selected = index;
+            ++index;
+        }
+        SendMessageW(choices, CB_SETCURSEL, selected, 0);
+        if (d.startsFromType()) showPresetTypeDetail(dlg, d, selected);
+    } else if (d.creating) {
+        SetDlgItemTextW(dlg, IDC_PRESET_HELP, fmt(L"Step %d of %d", d.page + 2, static_cast<int>(sections.size()) + 1).c_str());
+        SetDlgItemTextW(dlg, IDC_PRESET_SECTION, widen(sections.at(d.page).get("title", "")).c_str());
+    } else {
+        SetDlgItemTextW(dlg, IDC_PRESET_HELP, d.form.getBool("custom", false) ?
+                       L"Changes are saved to this custom preset." : L"Saving creates a custom copy.");
+        SetDlgItemTextW(dlg, IDC_PRESET_SECTION, L"Section");
+        if (SendMessageW(choices, CB_GETCOUNT, 0, 0) == 0) {
+            for (const auto& section : sections.items())
+                SendMessageW(choices, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(section.get("title", "")).c_str()));
+        }
+        SendMessageW(choices, CB_SETCURSEL, d.page, 0);
+    }
+    const auto& fields = onTemplate ? Value{} : sections.at(d.page)["fields"];
+    for (int i = 0; i < kPresetRows; ++i) {
+        HWND caption = GetDlgItem(dlg, IDC_PRESET_LABEL0 + i), input = GetDlgItem(dlg, IDC_PRESET_FIELD0 + i);
+        const bool visible = i < static_cast<int>(fields.size());
+        ShowWindow(caption, visible ? SW_SHOW : SW_HIDE);
+        ShowWindow(input, visible ? SW_SHOW : SW_HIDE);
+        if (!visible) continue;
+        const auto& field = fields.at(i);
+        const auto key = field.get("key", "");
+        const auto& value = d.changes.has(key) ? d.changes[key] : field["value"];
+        SetWindowTextW(caption, widen(field.get("label", "")).c_str());
+        SendMessageW(input, EM_SETLIMITTEXT, static_cast<WPARAM>(field.get("limit", 32.0)), 0);
+        SetWindowTextW(input, widen(value.isString() ? value.str() : roastsim::json::formatNumber(value.num())).c_str());
+    }
+    fitPresetPage(dlg, onTemplate ? 2 : static_cast<int>(fields.size()));
+    SetFocus(onTemplate || keepSectionFocus ? choices : GetDlgItem(dlg, IDC_PRESET_FIELD0));
+}
+
+bool readPresetPage(HWND dlg, PresetDraft& d, bool validate = true) {
+    if (d.page < 0) return true;
+    const auto& fields = static_cast<const Value&>(d.form)["sections"].at(d.page)["fields"];
+    for (int i = 0; i < static_cast<int>(fields.size()) && i < kPresetRows; ++i) {
+        const auto& field = fields.at(i);
+        const auto key = field.get("key", "");
+        const int input = IDC_PRESET_FIELD0 + i;
+        Value value;
+        std::wstring message;
+        if (field["value"].isString()) {
+            value = narrow(getText(GetDlgItem(dlg, input)));
+            if (key == "name" && value.str().find_first_not_of(" \t\r\n") == std::string::npos)
+                message = L"Enter a preset name.";
+        } else {
+            double number, min = field.get("min", 0.0), max = field.get("max", 0.0);
+            const bool whole = field.getBool("whole", false);
+            if (!readNumber(dlg, input, number) || number < min || number > max ||
+                (whole && std::trunc(number) != number)) {
+                if (!validate) continue;
+                message = fmt(L"%s must be %sbetween %g and %g.", widen(field.get("label", "")).c_str(),
+                              whole ? L"a whole number " : L"", min, max);
+            } else value = number;
+        }
+        if (!message.empty() && validate) {
+            SetDlgItemTextW(dlg, IDC_PRESET_ERROR, message.c_str());
+            SetFocus(GetDlgItem(dlg, input));
+            return false;
+        }
+        if (value.dump() == field["value"].dump() && !(d.creating && key == "name")) d.changes.erase(key);
+        else d.changes[key] = value;
+    }
+    return true;
+}
+
+INT_PTR CALLBACK presetDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_INITDIALOG) {
+        auto& d = *reinterpret_cast<PresetDraft*>(lp);
+        SetWindowLongPtrW(dlg, DWLP_USER, lp);
+        SetWindowTextW(dlg, ((d.creating ? L"New " : L"Edit ") + widen(d.kind) + L" preset").c_str());
+        showPresetPage(dlg, d);
+        return FALSE;
+    }
+    if (msg != WM_COMMAND) return FALSE;
+    auto* draft = reinterpret_cast<PresetDraft*>(GetWindowLongPtrW(dlg, DWLP_USER));
+    if (!draft) return FALSE;
+    PresetDraft& d = *draft;
+    const int selected = static_cast<int>(SendDlgItemMessageW(dlg, IDC_PRESET_CHOICES, CB_GETCURSEL, 0, 0));
+    switch (LOWORD(wp)) {
+        case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+        case IDC_PRESET_CHOICES:
+            if (HIWORD(wp) != CBN_SELCHANGE || selected < 0) return TRUE;
+            if (d.startsFromType() && d.page < 0) {
+                showPresetTypeDetail(dlg, d, selected);
+            } else if (!d.creating) {
+                if (readPresetPage(dlg, d)) { d.page = selected; showPresetPage(dlg, d); }
+                else SendDlgItemMessageW(dlg, IDC_PRESET_CHOICES, CB_SETCURSEL, d.page, 0);
+            }
+            return TRUE;
+        case IDC_PRESET_BACK:
+            readPresetPage(dlg, d, false);
+            --d.page;
+            showPresetPage(dlg, d);
+            return TRUE;
+        case IDOK: {
+            if (d.page < 0) {
+                if (selected < 0) return TRUE;
+                d.id = d.templates.at(selected).get("id", "");
+                std::string error;
+                if (d.id != d.loadedId && !loadPresetForm(d, error)) {
+                    SetDlgItemTextW(dlg, IDC_PRESET_ERROR, widen(error).c_str());
+                    return TRUE;
+                }
+                d.page = 0;
+                showPresetPage(dlg, d);
+                return TRUE;
+            }
+            if (!readPresetPage(dlg, d)) return TRUE;
+            if (d.creating && d.page + 1 < static_cast<int>(d.form["sections"].size())) {
+                ++d.page;
+                showPresetPage(dlg, d);
+                return TRUE;
+            }
+            Value c = Value::object();
+            c["cmd"] = "preset_save";
+            d.setSource(c);
+            c["revision"] = d.form.get("revision", "");
+            c["changes"] = d.changes;
+            d.saved = command(c);
+            if (d.saved.getBool("ok", false)) EndDialog(dlg, IDOK);
+            else SetDlgItemTextW(dlg, IDC_PRESET_ERROR, widen(d.saved.get("error", "Could not save the preset.")).c_str());
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+void showPresetDialog(const char* kind, bool creating) {
+    PresetDraft d;
+    d.kind = kind;
+    d.creating = creating;
+    d.page = creating ? -1 : 0;
+    const Value current = cmd1("state");
+    if (!creating && d.kind == "roaster" && !current["roaster"].getBool("custom", false)) return;
+    if (d.startsFromType()) {
+        const Value starters = cmd1("preset_types");
+        d.templates = starters["types"];
+        d.id = d.templates.at(0).get("id", "");
+    } else d.id = current[kind].get("id", "");
+    if (d.id.empty()) return;
+    if (creating) {
+        if (d.kind == "bean") {
+            const Value catalog = cmd1("list");
+            d.templates = catalog["beans"];
+        }
+        if (d.templates.size() == 0) return;
+    } else {
+        std::string error;
+        if (!loadPresetForm(d, error)) {
+            MessageBoxW(g.wnd, widen(error).c_str(), L"Presets", MB_ICONWARNING);
+            return;
+        }
+    }
+    if (DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_PRESET), g.wnd, presetDlgProc, reinterpret_cast<LPARAM>(&d)) != IDOK) return;
+    const Value active = cmd1("state");
+    populateLists();
+    selectPreset(g.roasterCombo, g.roasterIds, active["roaster"].get("id", ""));
+    selectPreset(g.beanCombo, g.beanIds, active["bean"].get("id", ""));
+    std::wstring message = L"Saved " + widen(d.saved.get("name", "")) + L".";
+    if (d.kind == "roaster" && active["roaster"].get("id", "") == d.saved.get("id", ""))
+        message += L" Reload the roaster preset to use the changes.";
+    MessageBoxW(g.wnd, message.c_str(), L"Presets", MB_ICONINFORMATION);
 }
 
 std::wstring num(double v, double step) { return fmt(L"%g", std::round(v / step) * step); }
@@ -1391,6 +1694,10 @@ void onCommand(int id, int code) {
             if (code == CBN_SELCHANGE) loadSelected(false);
             break;
         case IDM_RELOAD: loadSelected(true); break;
+        case IDM_BEAN_NEW: showPresetDialog("bean", true); break;
+        case IDM_BEAN_EDIT: showPresetDialog("bean", false); break;
+        case IDM_ROASTER_NEW: showPresetDialog("roaster", true); break;
+        case IDM_ROASTER_EDIT: showPresetDialog("roaster", false); break;
         case IDC_BEAN: {
             if (code != CBN_SELCHANGE) break;
             int bi = static_cast<int>(SendMessageW(g.beanCombo, CB_GETCURSEL, 0, 0));
@@ -1510,8 +1817,9 @@ void onSlider(HWND slider, int code) {
         if (g.sliders[i] != slider) continue;
         g.dragging[i] = code == TB_THUMBTRACK;
         int pos = static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0));
-        rs_host_set_control(g.host, kSliderControls[i], pos);
-        setText(g.sliderValues[i], fmt(L"%d%%", pos));
+        int levels = g.sliderLevels[i];
+        rs_host_set_control(g.host, kSliderControls[i], levels ? roastsim::levelPercent(pos, levels) : pos);
+        setText(g.sliderValues[i], levels ? sliderLevelText(pos) : fmt(L"%d%%", pos));
     }
 }
 
@@ -1591,6 +1899,13 @@ void createWidgets() {
     AppendMenuW(machine, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(machine, MF_POPUP, reinterpret_cast<UINT_PTR>(faults), L"Probe &faults");
 
+    HMENU presets = CreatePopupMenu();
+    AppendMenuW(presets, MF_STRING, IDM_BEAN_NEW, L"New &bean...");
+    AppendMenuW(presets, MF_STRING, IDM_BEAN_EDIT, L"Edit selected bean...");
+    AppendMenuW(presets, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(presets, MF_STRING, IDM_ROASTER_NEW, L"New &roaster...");
+    AppendMenuW(presets, MF_STRING, IDM_ROASTER_EDIT, L"Edit selected roaster...");
+
     // Item texts are rewritten with the current values by updateMenus().
     HMENU env = CreatePopupMenu();
     AppendMenuW(env, MF_STRING, IDM_ENV_AMBIENT, L"Room temperature");
@@ -1632,6 +1947,7 @@ void createWidgets() {
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(roast), L"&Roast");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(machine), L"&Machine");
+    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(presets), L"&Presets");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(env), L"&Environment");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(sim), L"&Simulation");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(units), L"&Units");

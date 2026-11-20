@@ -56,6 +56,7 @@ Kinetics Kinetics::fromJson(const json::Value& v, const Kinetics& base) {
 
 BeanSpec BeanSpec::fromJson(const json::Value& v) {
     BeanSpec s;
+    s.raw = v;
     s.id = v.get("id", s.id.c_str());
     s.name = v.get("name", s.name.c_str());
     s.origin = v.get("origin", "");

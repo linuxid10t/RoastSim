@@ -119,7 +119,7 @@ public:
     void setEnvironment(const Environment& env) { env_ = env; }
     const Environment& environment() const { return env_; }
 
-    // Controls in percent (clamped to the control's range).
+    // Controls in percent, clamped to the range and snapped to a numbered level if configured.
     void setControl(Control c, double pct);
     double control(Control c) const { return target_[static_cast<int>(c)]; }
 

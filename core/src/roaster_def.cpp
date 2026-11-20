@@ -4,6 +4,22 @@
 
 namespace roastsim {
 
+int controlLevel(double percent, int levels) {
+    return static_cast<int>(std::lround(clampd(percent, 0, 100) * levels / 100));
+}
+
+double levelPercent(int level, int levels) {
+    return levels > 0 ? 100.0 * std::clamp(level, 0, levels) / levels : 0.0;
+}
+
+bool ControlDef::supportsLevels() const {
+    return (id == Control::Heat || id == Control::Fan) && !toggle && min == 0 && max == 100;
+}
+
+double ControlDef::snapToLevel(double percent) const {
+    return levels > 0 ? levelPercent(controlLevel(percent, levels), levels) : percent;
+}
+
 const ControlDef* RoasterDef::control(Control c) const {
     for (const auto& cd : controls)
         if (cd.id == c) return &cd;
@@ -101,6 +117,17 @@ bool RoasterDef::fromJson(const json::Value& v, RoasterDef& out, std::string* er
         cd.step = c.get("step", 1.0);
         cd.toggle = c.getBool("toggle", false);
         cd.slew_per_s = c.get("slew_per_s", 0.0);
+        if (c.has("levels")) {
+            const auto& count = c["levels"];
+            const double levels = count.num();
+            if (!count.isNumber() || !std::isfinite(levels) || levels < 0 ||
+                levels > kMaxControlLevels || std::trunc(levels) != levels)
+                return fail("roaster '" + d.id + "': control levels must be a whole number from 0 to " +
+                            std::to_string(kMaxControlLevels));
+            if (levels > 0 && !cd.supportsLevels())
+                return fail("roaster '" + d.id + "': numbered levels require a 0–100% heat or fan control");
+            cd.levels = static_cast<int>(levels);
+        }
         d.controls.push_back(cd);
     }
     // Every machine drops into a cooling tray; expose its switch if not declared.
@@ -158,11 +185,12 @@ json::Value RoasterDef::describe() const {
         o["id"] = controlName(c.id);
         o["label"] = c.label;
         o["unit"] = c.unit;
-        o["default"] = c.def;
+        o["default"] = c.snapToLevel(c.def);
         o["min"] = c.min;
         o["max"] = c.max;
         o["step"] = c.step;
         o["toggle"] = c.toggle;
+        if (c.levels > 0) o["levels"] = c.levels;
         cs.push(o);
     }
     v["controls"] = cs;

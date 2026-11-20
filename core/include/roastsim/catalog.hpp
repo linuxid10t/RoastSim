@@ -16,6 +16,8 @@ public:
     bool loadDir(const std::string& dataDir);  // false if nothing could be loaded
     bool addRoasterJson(const std::string& text, std::string* err);
     bool addBeanJson(const std::string& text, std::string* err);
+    void putRoaster(RoasterDef def);
+    void putBean(BeanSpec spec);
 
     const RoasterDef* roaster(const std::string& id) const;
     const BeanSpec* bean(const std::string& id) const;

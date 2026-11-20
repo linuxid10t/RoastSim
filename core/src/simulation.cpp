@@ -65,7 +65,7 @@ void Simulation::load(const RoasterDef& roaster, const BeanSpec& bean, const Env
     for (const auto& pd : roaster_.probes) probes_.emplace_back(pd);
     for (int i = 0; i < kControlCount; ++i) target_[i] = actual_[i] = 0;
     for (const auto& cd : roaster_.controls) {
-        target_[static_cast<int>(cd.id)] = actual_[static_cast<int>(cd.id)] = cd.def;
+        target_[static_cast<int>(cd.id)] = actual_[static_cast<int>(cd.id)] = cd.snapToLevel(cd.def);
     }
     powered_ = false;  // a freshly attached machine starts switched off
     coldReset();
@@ -84,7 +84,7 @@ void Simulation::setControl(Control c, double pct) {
     if (!cd) return;
     double v = clampd(pct, cd->min, cd->max);
     if (cd->toggle) v = v >= 50 ? cd->max : cd->min;
-    target_[static_cast<int>(c)] = v;
+    target_[static_cast<int>(c)] = cd->snapToLevel(v);
 }
 
 int Simulation::probeIndex(const char* id) const { return roaster_.probeIndex(id); }
@@ -238,11 +238,14 @@ double Simulation::preheat(double target_C, double maxSeconds) {
     if (beanLoc_ == BeanLocation::Machine || !machine_) return -1;
     if (!powered_) return -1;  // a switched-off machine cannot heat
     Control ctl = roaster_.hasControl(Control::Heat) ? Control::Heat : Control::Voltage;
-    if (!roaster_.hasControl(ctl)) return -1;
+    const ControlDef* heater = roaster_.control(ctl);
+    if (!heater) return -1;
     // Make sure air moves / drum turns so nothing overheats while we wait.
     for (Control c : {Control::Fan, Control::Drum, Control::Stir}) {
         const ControlDef* cd = roaster_.control(c);
-        if (cd && target_[static_cast<int>(c)] < cd->def) target_[static_cast<int>(c)] = cd->def;
+        if (!cd) continue;
+        const double defaultSetting = cd->snapToLevel(cd->def);
+        if (target_[static_cast<int>(c)] < defaultSetting) target_[static_cast<int>(c)] = defaultSetting;
     }
     int ei = probeIndex("ET");
     if (ei < 0) return -1;
@@ -253,7 +256,7 @@ double Simulation::preheat(double target_C, double maxSeconds) {
         double err = target_C - et;
         I = clamp01(I + 0.0004 * err * kStep);
         double u = clamp01(0.04 * err + I);
-        target_[static_cast<int>(ctl)] = u * 100.0;
+        target_[static_cast<int>(ctl)] = heater->snapToLevel(u * 100.0);
         stepOnce(kStep);
         used += kStep;
         double wall = machine_->telemetry().wall_C;
@@ -263,7 +266,7 @@ double Simulation::preheat(double target_C, double maxSeconds) {
         else stable = 0;
         if (stable > 90) break;
     }
-    target_[static_cast<int>(ctl)] = std::round(target_[static_cast<int>(ctl)]);
+    if (heater->levels == 0) target_[static_cast<int>(ctl)] = std::round(target_[static_cast<int>(ctl)]);
     addEvent("NOTE", "preheat", "preheated to " + json::formatNumber(target_C, 1));
     return used;
 }

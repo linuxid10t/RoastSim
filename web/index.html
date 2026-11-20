@@ -36,6 +36,13 @@
       <hr>
       <button id="mFaults">Probe faults…</button>
     </div></details>
+    <details class="menu preset-menu"><summary>Presets</summary><div class="items">
+      <button data-preset-kind="bean" data-preset-mode="create">New bean…</button>
+      <button data-preset-kind="bean" data-preset-mode="edit">Edit selected bean…</button>
+      <hr>
+      <button data-preset-kind="roaster" data-preset-mode="create">New roaster…</button>
+      <button id="mEditRoaster" data-preset-kind="roaster" data-preset-mode="edit" disabled>Edit selected roaster…</button>
+    </div></details>
     <details class="menu"><summary>Environment</summary><div class="items">
       <button data-env="ambient" id="mEnvAmbient">Room temperature</button>
       <button data-env="volts" id="mEnvVolts">Mains voltage</button>
@@ -75,6 +82,7 @@
     <select id="roaster" aria-label="Roaster"></select>
     <select id="bean" aria-label="Green coffee"></select>
     <p id="desc" class="desc"></p>
+    <p id="presetNotice" class="desc" role="status" hidden></p>
 
     <h3>Roast</h3>
     <div class="roastrow">
@@ -132,6 +140,24 @@
   <span id="sbWeb">Web/WS --</span>
   <span id="sbLogger">No logger</span>
 </footer>
+
+<dialog id="presetDlg" aria-labelledby="presetTitle">
+  <form id="presetForm" novalidate>
+    <h2 id="presetTitle"></h2>
+    <p id="presetHelp" class="desc"></p>
+    <div id="presetTabs" class="preset-tabs" aria-label="Preset sections" hidden></div>
+    <div id="presetContent" class="preset-content">
+      <h3 id="presetSection"></h3>
+      <div id="presetFields" class="preset-fields"></div>
+    </div>
+    <p id="presetError" class="error" role="alert"></p>
+    <div class="buttons">
+      <button id="presetBack" type="button">Back</button><span class="spacer"></span>
+      <button id="presetCancel" type="button">Cancel</button>
+      <button id="presetNext" type="submit" class="primary">Next</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="envDlg">
   <form method="dialog" id="envForm">

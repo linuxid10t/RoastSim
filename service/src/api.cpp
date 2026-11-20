@@ -87,18 +87,23 @@ json::Value Host::stateJson(bool full) const {
     Snapshot s;
     json::Value def;
     double batch, scale, nominalVoltage;
-    bool paused;
+    std::uint64_t catalogRevision, roasterRevision;
+    bool paused, customRoaster;
     {
         std::lock_guard<std::mutex> lk(mu_);
         s = sim_.snapshot();
         if (full) def = sim_.roaster().describe();
         nominalVoltage = sim_.roaster().nominalLineVoltage();
+        catalogRevision = catalogRevision_;
+        roasterRevision = roasterRevision_;
+        customRoaster = userRoasters_.count(s.roaster_id) != 0;
         batch = batchG_;
         scale = timeScale_;
         paused = paused_;
     }
     json::Value v = json::Value::object();
     v["type"] = "state";
+    v["catalog_revision"] = static_cast<double>(catalogRevision);
     v["t"] = r1(s.t_session, 2);
     v["t_roast"] = r1(s.t_roast, 2);
     v["phase"] = roastPhaseName(s.phase);
@@ -110,6 +115,8 @@ json::Value Host::stateJson(bool full) const {
     ro["name"] = s.roaster_name;
     ro["kind"] = roasterKindName(s.kind);
     ro["nominal_V"] = nominalVoltage;
+    ro["revision"] = static_cast<double>(roasterRevision);
+    ro["custom"] = customRoaster;
     v["roaster"] = ro;
     json::Value be = json::Value::object();
     be["id"] = s.bean_id;
@@ -208,10 +215,13 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
 
     if (c == "state") return stateJson(cmd.getBool("full", false));
     if (c == "list") {
+        std::lock_guard<std::mutex> lk(mu_);
         json::Value v = catalog_.listJson();
         v["ok"] = true;
+        v["catalog_revision"] = static_cast<double>(catalogRevision_);
         return v;
     }
+    if (c == "preset_types" || c == "preset_form" || c == "preset_save") return presetCommand(cmd);
     if (c == "server" || c == "info") {
         json::Value v = serverInfo();
         v["ok"] = true;
@@ -285,13 +295,14 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         if (!r) return fail("unknown roaster '" + rid + "'");
         if (!b) return fail("unknown bean '" + bid + "'");
         sim_.load(*r, *b);
+        ++roasterRevision_;
         batchG_ = r->batch.default_g;
         return ok();
     }
     if (c == "bean") {
+        std::lock_guard<std::mutex> lk(mu_);
         const BeanSpec* b = catalog_.bean(cmd.get("id", cmd.get("bean", "").c_str()));
         if (!b) return fail("unknown bean");
-        std::lock_guard<std::mutex> lk(mu_);
         sim_.setBean(*b);
         return ok();
     }

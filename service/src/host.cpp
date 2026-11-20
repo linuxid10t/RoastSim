@@ -17,6 +17,7 @@ HostConfig HostConfig::fromJson(const json::Value& v, const HostConfig& base) {
     if (!v.isObject()) return c;
     c.data_dir = v.get("data_dir", c.data_dir.c_str());
     c.web_dir = v.get("web_dir", c.web_dir.c_str());
+    c.presets_dir = v.get("presets_dir", c.presets_dir.c_str());
     c.bind_address = v.get("bind_address", c.bind_address.c_str());
     c.http_enabled = v.getBool("http_enabled", c.http_enabled);
     c.http_port = static_cast<int>(v.get("http_port", static_cast<double>(c.http_port)));
@@ -53,6 +54,7 @@ json::Value HostConfig::toJson() const {
     json::Value v = json::Value::object();
     v["data_dir"] = data_dir;
     v["web_dir"] = web_dir;
+    v["presets_dir"] = presets_dir;
     v["bind_address"] = bind_address;
     v["http_enabled"] = http_enabled;
     v["http_port"] = http_port;
@@ -99,6 +101,8 @@ bool Host::start(std::string* err) {
     if (running_) return true;
     if (cfg_.data_dir.empty()) cfg_.data_dir = platform::findResourceDir("data");
     if (cfg_.web_dir.empty()) cfg_.web_dir = platform::findResourceDir("web");
+    if (cfg_.presets_dir.empty()) cfg_.presets_dir = platform::userPresetDir();
+    catalog_ = Catalog{};
     if (!catalog_.loadDir(cfg_.data_dir)) {
         if (err) {
             *err = "cannot load roaster/bean definitions from '" + cfg_.data_dir + "'";
@@ -107,6 +111,7 @@ bool Host::start(std::string* err) {
         return false;
     }
     for (const auto& e : catalog_.errors()) messages_.push_back("warning: " + e);
+    loadUserPresets();
 
     const RoasterDef* r = catalog_.roaster(cfg_.roaster);
     if (!r) {
@@ -123,6 +128,7 @@ bool Host::start(std::string* err) {
         sim_.setSeed(seed);
         sim_.setParcelCount(cfg_.parcels);
         sim_.load(*r, *b);
+        ++roasterRevision_;
         batchG_ = r->batch.default_g;
     }
 

@@ -77,6 +77,7 @@ if(RS_BUILD_SERVICE)
     service/src/sha1.cpp
     service/src/host.cpp
     service/src/api.cpp
+    service/src/presets.cpp
     service/src/modbus_server.cpp
     service/src/web_server.cpp
     service/src/tc4_serial.cpp

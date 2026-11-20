@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <thread>
 
 #include "../service/src/internal.hpp"
@@ -414,6 +415,148 @@ TEST(roaster_load_resets_wall_voltage) {
     send(R"({"cmd":"load","roaster":"spouted_bed_pilot"})");
     checkVoltage(230, 230);
     CHECK(host.snapshot().env.humidity_rh == 63);
+}
+
+TEST(preset_creator_and_editor_persist) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path path = fs::temp_directory_path(ec) / ("roastsim-presets-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    const bool ready = !ec && fs::create_directory(path, ec);
+    CHECK(ready);
+    if (!ready) return;
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code error; fs::remove_all(path, error); }
+    } cleanup{path};
+    HostConfig cfg;
+    cfg.data_dir = rstest::dataDir();
+    cfg.presets_dir = path.u8string();
+    cfg.http_enabled = cfg.modbus_enabled = false;
+    cfg.roaster = "spouted_bed_pilot";
+    cfg.bean = "kenya_pilot_blend";
+    Host host(cfg);
+    if (!host.start(nullptr)) { CHECK(false); return; }
+    auto request = [](Host& h, const char* text) { return h.command(json::Value::parse(text), "test"); };
+    auto open = [](Host& h, const std::string& kind, const std::string& mode, const std::string& source) {
+        auto cmd = json::Value::object();
+        cmd["cmd"] = "preset_form";
+        cmd["kind"] = kind;
+        cmd["mode"] = mode;
+        cmd[kind == "roaster" && mode == "create" ? "roaster_type" : "id"] = source;
+        return h.command(cmd, "test");
+    };
+    auto prepare = [](const json::Value& form, const std::string& kind, const std::string& mode, const std::string& source) {
+        auto cmd = json::Value::object();
+        cmd["cmd"] = "preset_save";
+        cmd["kind"] = kind;
+        cmd["mode"] = mode;
+        cmd[kind == "roaster" && mode == "create" ? "roaster_type" : "id"] = source;
+        cmd["revision"] = form.get("revision", "");
+        cmd["changes"] = json::Value::object();
+        return cmd;
+    };
+
+    const auto revision = host.stateJson(false).get("catalog_revision", 0.0);
+    CHECK(!host.stateJson(false)["roaster"].getBool("custom", true));
+    CHECK(!open(host, "roaster", "edit", cfg.roaster).getBool("ok", true));
+    CHECK(!host.command(prepare({}, "roaster", "edit", cfg.roaster), "test").getBool("ok", true));
+    CHECK(!open(host, "roaster", "create", cfg.roaster).getBool("ok", true));
+    const auto types = request(host, R"({"cmd":"preset_types"})");
+    CHECK(types.getBool("ok", false));
+    CHECK(types["types"].size() == 4);
+    for (const char* type : {"fluid_bed", "electric_drum", "gas_drum", "stir_pan"})
+        CHECK(open(host, "roaster", "create", type).getBool("ok", false));
+    auto form = open(host, "roaster", "create", "fluid_bed");
+    CHECK(form.getBool("ok", false) && !form.getBool("custom", true));
+    auto createRoaster = prepare(form, "roaster", "create", "fluid_bed");
+    auto& changes = createRoaster["changes"];
+    changes["name"] = "My hot-air roaster";
+    changes["batch.default_g"] = 900;
+    CHECK(!host.command(createRoaster, "test").getBool("ok", true));
+    changes["batch.default_g"] = 200;
+    changes["fluid_bed.nominal_V"] = 240;
+    changes["controls.heat.levels"] = 7.5;
+    CHECK(!host.command(createRoaster, "test").getBool("ok", true));
+    changes["controls.heat.levels"] = 8;
+    changes["controls.fan.levels"] = 8;
+    auto savedRoaster = host.command(createRoaster, "test");
+    CHECK(savedRoaster.getBool("ok", false));
+    const auto roasterId = savedRoaster.get("id", "");
+    CHECK(!roasterId.empty() && roasterId != cfg.roaster);
+    CHECK(host.snapshot().roaster_id == cfg.roaster);
+    CHECK(host.snapshot().env.line_voltage == 230);
+    const auto customRoaster = open(host, "roaster", "edit", roasterId);
+    CHECK(customRoaster.getBool("custom", false));
+    auto editRoaster = prepare(customRoaster, "roaster", "edit", roasterId);
+    editRoaster["changes"]["probes.BT.offset"] = 2.5;
+    editRoaster["changes"]["controls.fan.levels"] = 10;
+    CHECK(host.command(editRoaster, "test").get("id", "") == roasterId);
+
+    auto beanForm = open(host, "bean", "edit", cfg.bean);
+    auto createBean = prepare(beanForm, "bean", "edit", cfg.bean);
+    createBean["changes"]["name"] = "My Arabica";
+    createBean["changes"]["moisture_pct"] = 11.8;
+    auto savedBean = host.command(createBean, "test");
+    CHECK(savedBean.getBool("ok", false));
+    const auto beanId = savedBean.get("id", "");
+    CHECK(!beanId.empty() && beanId != cfg.bean);
+    CHECK(host.snapshot().bean_id == cfg.bean);
+
+    auto customForm = open(host, "bean", "edit", beanId);
+    CHECK(customForm.getBool("custom", false));
+    auto editBean = prepare(customForm, "bean", "edit", beanId);
+    editBean["changes"]["fc_temp"] = 201;
+    editBean["changes"]["kinetics.exo_H"] = 999;
+    CHECK(!host.command(editBean, "test").getBool("ok", true));
+    editBean["changes"].erase("kinetics.exo_H");
+    CHECK(host.command(editBean, "test").get("id", "") == beanId);
+    CHECK(!host.command(editBean, "test").getBool("ok", true));  // stale revision
+    CHECK(host.stateJson(false).get("catalog_revision", 0.0) > revision);
+
+    host.stop();
+    cfg.roaster = roasterId;
+    cfg.bean = beanId;
+    Host restarted(cfg);
+    if (!restarted.start(nullptr)) { CHECK(false); return; }
+    CHECK(restarted.snapshot().roaster_id == roasterId);
+    CHECK(restarted.stateJson(false)["roaster"].getBool("custom", false));
+    CHECK(restarted.snapshot().bean_id == beanId);
+    CHECK(restarted.snapshot().env.line_voltage == 240);
+    const auto roaster = restarted.roasterDef();
+    CHECK(roaster.batch.default_g == 200);
+    CHECK(roaster.probes[static_cast<std::size_t>(roaster.probeIndex("BT"))].offset == 2.5);
+    const auto* heat = roaster.control(Control::Heat);
+    const auto* fan = roaster.control(Control::Fan);
+    CHECK(heat && heat->levels == 8);
+    CHECK(fan && fan->levels == 10);
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Heat)] == 0);
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Fan)] == 90);
+    CHECK(request(restarted, R"({"cmd":"set","controls":{"heat":40,"fan":55}})").getBool("ok", false));
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Heat)] == 37.5);
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Fan)] == 60);
+    CHECK(request(restarted, R"({"cmd":"power","value":true})").getBool("ok", false));
+    CHECK(request(restarted, R"({"cmd":"step","seconds":0.1})").getBool("ok", false));
+    CHECK(restarted.snapshot().actuators[static_cast<int>(Control::Heat)] == 37.5);
+    CHECK(restarted.snapshot().actuators[static_cast<int>(Control::Fan)] == 60);
+    CHECK(restarted.setControl(Control::Heat, 0, "test"));
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Heat)] == 0);
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Fan)] == 60);
+    CHECK(restarted.setControl(Control::Fan, 10, "test"));
+    CHECK(request(restarted, R"({"cmd":"step","seconds":10})").getBool("ok", false));
+    CHECK(restarted.snapshot().tele.airflow_kg_s > 0.001);  // level 1 drives the motor above stall
+    CHECK(restarted.setControl(Control::Fan, 0, "test"));
+    CHECK(request(restarted, R"({"cmd":"step","seconds":10})").getBool("ok", false));
+    CHECK(restarted.snapshot().tele.airflow_kg_s < 0.000001);
+    const auto bean = restarted.beanSpec();
+    CHECK(std::abs(bean.moisture_wb - 0.118) < 1e-8);
+    CHECK(bean.fc_temp == 201);
+    CHECK(bean.kinetics.dry_B == 9793);  // inherited fields outside the editor
+    CHECK(request(restarted, R"({"cmd":"load","roaster":"spouted_bed_pilot","bean":"kenya_pilot_blend"})").getBool("ok", false));
+    CHECK(restarted.snapshot().env.line_voltage == 230);
+    CHECK(restarted.beanSpec().fc_temp == 196);
+    CHECK(restarted.setControl(Control::Heat, 37.1, "test"));
+    CHECK(restarted.snapshot().controls[static_cast<int>(Control::Heat)] == 37.1);
 }
 
 TEST(c_api) {
