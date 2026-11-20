@@ -46,7 +46,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `audio` | `value` (bool), `rate` (8000–48000, default 24000) | **WebSocket only**: stream the roaster's sound as binary frames of int16 little-endian mono PCM (see [SOUND.md](SOUND.md)) |
 | `audio_mix` | `master`, `machine`, `cracks` (0–1) | **WebSocket only**: levels for this connection's sound stream |
 
-Event types: `CHARGE`, `TP`, `DRY`, `FCs`, `FCe`, `SCs`, `SCe`, `DROP`, `COOL`, `ALARM` (`detail` = alarm name), `NOTE`.
+Event types: `CHARGE`, `TP`, `DRY`, `FCs`, `FCe`, `SCs`, `SCe`, `DROP`, `COOL`, `ALARM` (`detail` = alarm name), `NOTE` (`detail` = free text; the simulator writes `power on` / `power off` and `cold reset`, the first event after a cold reset or roaster load, which front ends use to start a new graph).
 
 Alarm names (and C API bit numbers): `thermostat_open` (0), `fuse_blown` (1), `beans_ejecting` (2), `bed_stalled` (3), `scorching` (4), `smoke_heavy` (5), `fire_risk` (6), `overheat` (7), `centrifuging` (8), `probe_fault` (9).
 

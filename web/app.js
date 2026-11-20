@@ -1,19 +1,35 @@
 // RoastSim web control panel. Talks to the simulator over the same WebSocket
-// JSON API as every other front end (docs/API.md).
+// JSON API as every other front end (docs/API.md), and mirrors the native
+// Win32 app: menus for chores and settings, a roast progress panel, a graph
+// that runs from power-on to the roast report, and a status bar.
 'use strict';
 
 const $ = (id) => document.getElementById(id);
 const COLS = ['t', 't_roast', 'bt', 'et', 'ror_bt', 'ror_et', 'bean_true', 'heat', 'fan', 'drum'];
+const PHASES = ['Drying', 'Maillard', 'Development'];
+const MARKS = [['DRY', 'Mark DRY'], ['FCs', 'Mark FC start'], ['FCe', 'Mark FC end'], ['SCs', 'Mark SC start'], ['SCe', 'Mark SC end']];
+const SPEEDS = [0, 1, 2, 5, 10, 30, 60];
+const VOLUMES = [25, 50, 75, 100];
+const ENV_DEFAULTS = { ambient_C: 22, line_voltage: 120, source_ohms: 0.25, gas_pressure: 1, altitude_m: 0 };
 
 let ws = null, reqId = 0;
 const pending = new Map();
 let state = null, def = null;
-let history = [];          // rows: arrays in COLS order
-let events = [];
-let lastPhase = null;
+let history = [];          // rows: arrays in COLS order, kept since power-on
+let events = [];           // events of the current graph
 let dragging = new Set();
-let snd = null;           // { ctx, gain, rate, next } while sound is on
-let preheatC = 200;       // preheat target, kept in C
+let snd = null;            // { ctx, gain, rate, next } while sound is on
+let volume = 75;           // percent
+let preheatC = 200;        // preheat target, kept in C
+let serverInfo = null;
+
+// The graph covers one session: it starts when the machine is switched on and
+// ends with the roast report (COOL), when the machine switches off again.
+// Session-clock seconds; start < 0 = not started, end < 0 = still recording.
+let graph = { start: -1, end: -1 };
+// Events up to this sequence number were replayed on connect: they rebuild the
+// graph but must not pop up a report or switch the machine off again.
+let liveFrom = Infinity;
 
 // ---------------------------------------------------------------- units
 // The API always speaks C / grams / metres; this shared setting (also used for
@@ -29,19 +45,18 @@ const WF = { g: 1, kg: 1000, oz: 28.349523125, lb: 453.59237 };
 const W = (g) => g / WF[units.weight];
 const fromW = (v) => v * WF[units.weight];
 const fmtW = (g) => W(g).toFixed(units.weight === 'g' ? 0 : units.weight === 'oz' ? 1 : 2);
-const A = (m) => units.altitude === 'ft' ? m / 0.3048 : m;
-const fromA = (v) => units.altitude === 'ft' ? v * 0.3048 : v;
+const isFt = () => units.altitude === 'ft';
+const A = (m) => isFt() ? m / 0.3048 : m;
+const fromA = (v) => isFt() ? v * 0.3048 : v;
+const AU = () => isFt() ? 'ft' : 'm';
 const t1 = (c) => c === -1 ? 'open' : T(c).toFixed(1);   // probe reading (-1 = open thermocouple)
+const num = (v, step) => String(Math.round(v / step) * step).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 
 function applyUnits(s) {
   for (const el of document.querySelectorAll('.tu')) el.textContent = TU();
   $('batchUnit').textContent = units.weight;
-  $('altUnit').textContent = units.altitude;
-  $('uTemp').value = units.temperature; $('uWeight').value = units.weight; $('uAlt').value = units.altitude;
+  $('altUnit').textContent = AU();
   $('batch').value = fmtW(s.next_batch_g);
-  $('preheatT').value = T(preheatC).toFixed(0);
-  $('env_ambient_C').value = T(s.env.ambient_C).toFixed(0);
-  $('env_altitude_m').value = A(s.env.altitude_m).toFixed(0);
 }
 
 // ---------------------------------------------------------------- transport
@@ -50,14 +65,17 @@ function connect() {
   ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   ws.onopen = async () => {
-    setPill('conn', true, 'online');
-    history = []; events = [];
+    history = []; events = []; graph = { start: -1, end: -1 };
+    renderEvents();
     await loadLists();
     await refreshDef();
+    const s0 = await send({ cmd: 'state' });
+    liveFrom = s0.event_seq || 0;
     send({ cmd: 'subscribe', history_from: 0, event_seq: 0 });
     if (snd) send({ cmd: 'audio', value: true, rate: snd.rate });  // resume sound after a reconnect
+    pollServer();
   };
-  ws.onclose = () => { setPill('conn', false, 'offline'); setTimeout(connect, 1500); };
+  ws.onclose = () => { state = null; $('sbState').textContent = 'offline'; setTimeout(connect, 1500); };
   ws.onmessage = (m) => {
     if (m.data instanceof ArrayBuffer) { playPcm(m.data); return; }
     let msg;
@@ -83,7 +101,11 @@ async function act(cmd) {
   return r;
 }
 
-function setPill(id, on, text) { const el = $(id); el.className = 'pill ' + (on ? 'on' : 'off'); el.textContent = text; }
+async function pollServer() {
+  if (!ws || ws.readyState !== 1) return;
+  serverInfo = await send({ cmd: 'server' });
+  setTimeout(pollServer, 5000);
+}
 
 // ---------------------------------------------------------------- setup
 async function loadLists() {
@@ -102,20 +124,20 @@ async function refreshDef() {
   buildSliders();
   const fp = $('faultProbe'); fp.innerHTML = '';
   for (const p of def.probes) fp.add(new Option(p.label + ' (' + p.id + ')', p.id));
-  for (const k of Object.keys(s.env)) { const el = $('env_' + k); if (el) el.value = s.env[k]; }
   if (s.units) units = s.units;
   unitKey = JSON.stringify(units);
   applyUnits(s);
 }
 
 function buildSliders() {
-  const box = $('sliders'); box.innerHTML = '';
+  const box = $('sliders'), toggles = $('toggles');
+  box.innerHTML = ''; toggles.innerHTML = '';
   for (const c of def.controls) {
-    if (c.toggle) {
+    if (c.toggle) {  // e.g. the cooling tray fan: a checkbox next to Power, as in the native app
       const row = document.createElement('label'); row.className = 'check';
       row.innerHTML = `<input type="checkbox" data-ctl="${c.id}"> ${c.label}`;
       row.querySelector('input').onchange = (e) => send({ cmd: 'set', control: c.id, value: e.target.checked ? 100 : 0 });
-      box.appendChild(row); continue;
+      toggles.appendChild(row); continue;
     }
     const row = document.createElement('div'); row.className = 'slider';
     row.innerHTML = `<span>${c.label}</span><input type="range" min="${c.min}" max="${c.max}" step="${c.step}" data-ctl="${c.id}"><output>0%</output>`;
@@ -124,40 +146,131 @@ function buildSliders() {
     input.onchange = () => dragging.delete(c.id);
     box.appendChild(row);
   }
+  $('controlsHead').hidden = box.children.length === 0;
 }
 
-// ---------------------------------------------------------------- state
+// ---------------------------------------------------------------- graph session + events
 function fmtTime(s) {
   if (s === null || s === undefined || s < 0) return '--:--';
   const t = Math.floor(s); return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
 }
+const fmtSigned = (s) => s < 0 ? '-' + fmtTime(-s) : fmtTime(s);
 
-function onState(s) {
-  // On CHARGE the server keeps one minute of pre-charge history re-timed to
-  // negative roast time; refetch it so the graph shows the drop into TP.
-  if (lastPhase !== null && lastPhase !== 'roasting' && s.phase === 'roasting') {
-    lastPhase = s.phase;
-    history = [];
-    send({ cmd: 'subscribe', history_from: 0, event_seq: s.event_seq });
+function startGraph(t) {
+  graph = { start: t, end: -1 };
+  events = [];
+  if (t >= 0) { const i = history.findIndex(r => r[0] >= t - 1); history.splice(0, i < 0 ? history.length : i); }
+  renderEvents();
+}
+
+const eventTime = (type) => { const e = events.find(x => x.event === type); return e ? e.t_roast : -1; };
+
+function onEvent(e) {
+  const type = e.event;
+  // A cold reset or roaster load (from any front end) wipes the simulator's
+  // history: start a new graph if the machine is on.
+  if (type === 'NOTE' && e.detail === 'cold reset') {
+    if (graph.start < 0 || e.t > graph.start) startGraph(state && state.power ? e.t : -1);
     return;
   }
-  lastPhase = s.phase;
+  // Switching on starts a new graph, unless a roast is in progress on the
+  // current one (a mid-roast power cut keeps the graph going).
+  if (type === 'NOTE' && e.detail === 'power on' &&
+      (graph.start < 0 || graph.end >= 0 || eventTime('CHARGE') < 0)) startGraph(e.t);
+  if (graph.start < 0 || e.t < graph.start - 0.5 || graph.end >= 0) return;  // not part of this graph
+  if (type === 'CHARGE') events = [];
+  events.push(e);
+  renderEvents();
+  if (type === 'COOL') {
+    // The roast is over: freeze the graph here, then power off and report.
+    graph.end = e.t;
+    if (e.seq > liveFrom) roastDone();
+  }
+}
+
+async function roastDone() {
+  await send({ cmd: 'power', value: false });
+  showReport();
+}
+
+function renderEvents() {
+  const ol = $('events');
+  ol.innerHTML = events.map(e => `<li>${fmtTime(e.t_roast)}  ${e.event}${e.detail ? ' ' + e.detail : ''}  (BT ${t1(e.bt)}${TU()}, ${e.origin})</li>`).join('');
+  ol.scrollTop = ol.scrollHeight;
+}
+
+// ---------------------------------------------------------------- roast progress
+// Everything the progress panel shows, worked out from the roast's events.
+// After DROP the numbers freeze at the drop.
+function phaseView() {
+  const v = { roast: false, dropped: false, end: 0, start: [-1, -1, -1], dur: [-1, -1, -1], active: -1,
+              sinceName: 'dry end', since: -1, sinceIdx: -1 };
+  const drop = eventTime('DROP');
+  if (eventTime('CHARGE') < 0 || (drop < 0 && (!state || state.t_roast < 0))) return v;
+  v.roast = true;
+  v.dropped = drop >= 0;
+  v.end = v.dropped ? drop : state.t_roast;
+  const dry = eventTime('DRY'), fcs = eventTime('FCs');
+  v.start = [0, dry, fcs >= 0 && dry >= 0 ? fcs : -1];
+  for (let i = 0; i < 3; i++) {
+    if (v.start[i] < 0) continue;
+    const next = i + 1 < 3 && v.start[i + 1] >= 0 ? v.start[i + 1] : v.end;
+    v.dur[i] = Math.max(0, next - v.start[i]);
+    if (!v.dropped) v.active = i;
+  }
+  // The newest event wins: second crack replaces first crack, and so on.
+  for (const [type, name, phase] of [['TP', 'turning point', 0], ['DRY', 'dry end', 1], ['FCs', 'first crack', 2], ['SCs', 'second crack', 2]]) {
+    const t = eventTime(type);
+    if (t < 0 || t > v.end) continue;
+    v.since = v.end - t; v.sinceName = name; v.sinceIdx = phase;
+  }
+  return v;
+}
+
+function renderProgress() {
+  const v = phaseView();
+  $('roastCap').textContent = v.dropped ? 'Roast time (dropped)' : 'Roast time';
+  $('roastTime').textContent = v.roast ? fmtTime(v.end) : '--:--';
+  $('roastTime').parentElement.classList.toggle('idle', !v.roast);
+  $('sinceCap').textContent = `Since ${v.sinceName}${v.dropped && v.since >= 0 ? ' (to drop)' : ''}`;
+  $('since').textContent = v.since >= 0 ? fmtTime(v.since) : '--:--';
+  $('since').style.color = v.since >= 0 ? `var(--ph${v.sinceIdx})` : 'var(--muted)';
+  for (const cell of document.querySelectorAll('.phase')) {
+    const i = +cell.dataset.i, reached = v.dur[i] >= 0;
+    cell.classList.toggle('off', !reached);
+    cell.classList.toggle('active', i === v.active);
+    cell.querySelector('b').textContent = reached ? fmtTime(v.dur[i]) : '--:--';
+    cell.querySelector('em').textContent = reached && v.end > 0 ? (v.dur[i] / v.end * 100).toFixed(0) + '%' : '';
+  }
+  // The Mark button offers the next event of the roast not yet marked (by
+  // you, Artisan or the simulator's own detection).
+  const next = MARKS.findIndex(([type]) => eventTime(type) < 0);
+  const roasting = state && state.phase === 'roasting';
+  const b = $('markNext');
+  b.textContent = next >= 0 ? MARKS[next][1] : 'All marked';
+  b.disabled = !(roasting && next >= 0);
+  b.dataset.mark = next >= 0 ? MARKS[next][0] : '';
+}
+
+// ---------------------------------------------------------------- state
+function onState(s) {
   if (s.history) {
     for (const r of s.history) history.push(r);
     if (history.length > 20000) history.splice(0, history.length - 20000);
   }
   state = s;
+  // Machine already on with no power-on in the event log (e.g. switched on
+  // before the last cold reset): the graph starts with the oldest sample.
+  if (s.power && graph.start < 0) startGraph(history.length ? history[0][0] : s.t);
   if (s.units && JSON.stringify(s.units) !== unitKey) {  // changed here or in another front end
     units = s.units;
     unitKey = JSON.stringify(units);
     applyUnits(s);
+    renderEvents();
   }
   $('bt').textContent = t1(s.bt);
   $('et').textContent = t1(s.et);
   $('ror').textContent = s.t_roast > 0 ? R(s.ror_bt).toFixed(1) : '--';
-  $('time').textContent = fmtTime(s.t_roast);
-  $('phase').textContent = s.phase;
-  setPill('logger', s.logger_connected, s.logger_connected ? 'logger connected' : 'no logger');
   for (const el of document.querySelectorAll('[data-ctl]')) {
     const c = s.controls[el.dataset.ctl]; if (!c) continue;
     if (el.type === 'checkbox') el.checked = c.value >= 50;
@@ -166,22 +279,33 @@ function onState(s) {
       el.nextElementSibling.textContent = Math.abs(c.actual - c.value) > 0.5 ? `${c.actual.toFixed(0)}→${c.value.toFixed(0)}` : c.value.toFixed(0) + '%';
     }
   }
-  $('speed').value = s.paused ? '0' : String(s.time_scale);
   $('power').checked = !!s.power;
-  $('powerHint').textContent = s.power ? 'on' : 'off — heater, fan and motor do nothing';
   $('controlsPanel').classList.toggle('off', !s.power);
   $('alarms').innerHTML = s.alarms.map(a => `<span>${a.replace(/_/g, ' ')}</span>`).join('');
+  renderStatus(s);
+  renderProgress();
   renderTables(s);
   drawChart();
 }
 
-function onEvent(e) {
-  if (e.event === 'CHARGE') { events = []; }
-  events.push(e);
-  const li = document.createElement('li');
-  li.textContent = `${fmtTime(e.t_roast)}  ${e.event}${e.detail ? ' ' + e.detail : ''}  (BT ${t1(e.bt)}${TU()}, ${e.origin})`;
-  const ol = $('events'); ol.appendChild(li); ol.scrollTop = ol.scrollHeight;
-  if (e.event === 'COOL') showReport();
+function speedText(s) {
+  if (s.paused) return 'Paused';
+  if (s.logger_connected) return 'Real time (logger)';
+  return s.time_scale === 1 ? 'Real time' : `Speed ${s.time_scale}×`;
+}
+const envSummary = (e) => `${T(e.ambient_C).toFixed(0)} ${TU()} · ${e.line_voltage.toFixed(0)} V · ${A(e.altitude_m).toFixed(0)} ${AU()}`;
+
+function renderStatus(s) {
+  const phases = { idle: 'empty', roasting: 'roasting', cooling: 'cooling', done: 'done' };
+  $('sbState').textContent = s.power ? `Power on · ${phases[s.phase] || s.phase}` : 'POWER OFF';
+  $('sbState').classList.toggle('off', !s.power);
+  $('sbSpeed').textContent = speedText(s) + ' ▾';
+  $('sbEnv').textContent = envSummary(s.env);
+  $('sbLogger').textContent = s.logger_connected ? 'Logger connected' : 'No logger';
+  if (serverInfo && serverInfo.net) {
+    $('sbModbus').textContent = 'Modbus ' + (serverInfo.net.modbus || 'off');
+    $('sbWeb').textContent = 'Web/WS ' + (serverInfo.net.http || 'off');
+  }
 }
 
 function renderTables(s) {
@@ -225,11 +349,11 @@ async function setSound(on) {
     let ctx;
     try { ctx = new AudioContext({ sampleRate: 24000 }); } catch { ctx = new AudioContext(); }
     const gain = ctx.createGain();
-    gain.gain.value = +$('volume').value / 100;
+    gain.gain.value = volume / 100;
     gain.connect(ctx.destination);
     snd = { ctx, gain, rate: 24000, next: 0 };
     const r = await send({ cmd: 'audio', value: true, rate: snd.rate });
-    if (!r.ok) { alert(r.error || 'sound unavailable'); setSound(false); $('sound').checked = false; }
+    if (!r.ok) { alert(r.error || 'sound unavailable'); setSound(false); }
   } else if (!on && snd) {
     send({ cmd: 'audio', value: false });
     snd.ctx.close();
@@ -265,15 +389,27 @@ function drawChart() {
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
   if (!state) return;
   const L = 44, Rx = W - 40, Tp = 22, B = H - 24;
-  const roast = state.t_roast >= 0;
-  const xi = roast ? 1 : 0;
-  let x0, x1;
-  if (roast) { x0 = -60; x1 = Math.max(720, Math.ceil((state.t_roast + 60) / 120) * 120); }
-  else { x1 = Math.max(60, state.t); x0 = Math.max(0, x1 - 600); }
+
+  // The graph runs from power-on (graph.start) to the roast report (graph.end).
+  // Before CHARGE the axis is time since power-on; from CHARGE on it is roast
+  // time, with the pre-charge part (preheat) at negative times.
+  const started = graph.start >= 0;
+  const tEnd = graph.end >= 0 ? graph.end : state.t;
+  const charge = events.find(e => e.event === 'CHARGE');
+  const roast = started && !!charge;
+  const origin = roast ? charge.t : graph.start;
+  const inGraph = (ts) => started && ts >= graph.start - 0.5 && ts <= tEnd + 0.5;
+  let x0 = 0, x1 = 300;
+  if (roast) {
+    x0 = Math.min(0, Math.floor((graph.start - charge.t) / 30) * 30);
+    x1 = Math.max(720, Math.ceil((tEnd - charge.t + 60) / 120) * 120);
+  } else if (started) {
+    x1 = Math.max(x1, Math.ceil((tEnd - graph.start + 30) / 60) * 60);
+  }
   // Axes in display units: C 0-250 by 50 / F 0-500 by 100; RoR 0-50 C/min / 0-90 F/min.
   const tStep = isF() ? 100 : 50, rorMax = isF() ? 90 : 50, rorStep = isF() ? 15 : 10;
   let tMax = isF() ? 500 : 250;
-  for (const r of history) if (r[xi] >= x0) tMax = Math.max(tMax, T(r[2]) + 10, T(r[3]) + 10);
+  for (const r of history) if (inGraph(r[0])) tMax = Math.max(tMax, T(r[2]) + 10, T(r[3]) + 10);
   tMax = Math.ceil(tMax / tStep) * tStep;
   const X = (x) => L + (x - x0) / (x1 - x0) * (Rx - L);
   const Y = (c) => B - T(c) / tMax * (B - Tp);
@@ -281,40 +417,76 @@ function drawChart() {
   g.font = '11px system-ui'; g.fillStyle = css('--muted'); g.strokeStyle = css('--line'); g.lineWidth = 1;
   for (let v = 0; v <= tMax; v += tStep) { const y = B - v / tMax * (B - Tp); g.beginPath(); g.moveTo(L, y); g.lineTo(Rx, y); g.stroke(); g.fillText(v, 8, y + 4); }
   for (let v = 0; v <= rorMax; v += rorStep) g.fillText(v, Rx + 6, B - v / rorMax * (B - Tp) + 4);
-  g.fillText(TU(), 8, Tp - 2); g.fillText(TU() + '/min', Rx - 24, Tp - 2);
-  const step = (x1 - x0) > 900 ? 120 : 60;
+  g.fillText(TU(), 8, Tp - 8); g.fillText(TU() + '/min', Rx - 24, Tp - 8);
+  // Time grid: the smallest step that keeps the labels from crowding.
+  let step = 600;
+  for (const s of [30, 60, 120, 300]) if ((x1 - x0) / s <= (Rx - L) / 50) { step = s; break; }
   for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) {
-    g.beginPath(); g.moveTo(X(x), Tp); g.lineTo(X(x), B); g.stroke(); g.fillText(fmtTime(x), X(x) - 14, H - 6);
+    g.beginPath(); g.moveTo(X(x), Tp); g.lineTo(X(x), B); g.stroke(); g.fillText(fmtSigned(x), X(x) - 14, H - 6);
+  }
+  if (!started) {
+    const msg = 'Switch the machine on (Power) to start the graph';
+    g.font = '600 14px system-ui'; g.fillStyle = css('--muted');
+    g.fillText(msg, (L + Rx - g.measureText(msg).width) / 2, (Tp + B) / 2);
+    return;
   }
   // heat % band
   g.fillStyle = 'rgba(224,150,42,0.18)';
-  for (const r of history) { if (r[xi] < x0) continue; const h = r[7] / 100 * (B - Tp) * 0.18; g.fillRect(X(r[xi]), B - h, Math.max(1, (Rx - L) / (x1 - x0)), h); }
-  const line = (col, idx, color, width, ror, filter) => {
-    g.strokeStyle = color; g.lineWidth = width; g.beginPath(); let started = false;
+  for (const r of history) {
+    if (!inGraph(r[0])) continue;
+    const x = r[0] - origin; if (x < x0 || x > x1) continue;
+    const h = r[7] / 100 * (B - Tp) * 0.18; g.fillRect(X(x), B - h, Math.max(1, (Rx - L) / (x1 - x0)), h);
+  }
+  const line = (idx, color, width, ror, filter) => {
+    g.strokeStyle = color; g.lineWidth = width; g.beginPath(); let on = false;
     for (const r of history) {
-      const x = r[xi]; if (x < x0 || x > x1 || (filter && !filter(r))) { started = false; continue; }
-      if (!ror && r[idx] <= -0.5) { started = false; continue; }
+      const x = r[0] - origin;
+      if (!inGraph(r[0]) || x < x0 || x > x1 || (filter && !filter(r))) { on = false; continue; }
+      if (!ror && r[idx] <= -0.5) { on = false; continue; }
       const y = ror ? YR(r[idx]) : Y(r[idx]);
-      if (!started) { g.moveTo(X(x), y); started = true; } else g.lineTo(X(x), y);
+      if (!on) { g.moveTo(X(x), y); on = true; } else g.lineTo(X(x), y);
     }
     g.stroke();
   };
-  line('et', 3, css('--et'), 2, false);
-  line('bt', 2, css('--bt'), 2, false);
+  line(3, css('--et'), 2, false);
+  line(2, css('--bt'), 2, false);
   if (roast) {
-    line('true', 6, css('--true'), 1, false, r => r[1] >= 0);
-    line('ror', 4, css('--ror'), 1.5, true, r => r[1] > 20);
+    line(6, css('--true'), 1, false, r => r[1] >= 0);   // no beans before CHARGE
+    line(4, css('--ror'), 1.5, true, r => r[1] > 20);
   }
-  g.fillStyle = css('--ink'); g.strokeStyle = css('--muted'); g.setLineDash([3, 3]);
-  let row = 0;
+  // Phase band along the top of the plot: drying, Maillard, development.
+  const pv = phaseView();
+  if (roast && pv.roast) {
+    for (let i = 0; i < 3; i++) {
+      if (pv.dur[i] < 0) continue;
+      const a = Math.max(L, X(pv.start[i])), z = Math.min(Rx, X(pv.start[i] + pv.dur[i]));
+      if (z > a) { g.fillStyle = css('--ph' + i); g.fillRect(a, Tp, z - a, 5); }
+    }
+  }
+  // Event lines, each labelled with its time and BT so nothing has to be read
+  // off the axes. Labels go in the first row where they don't overlap.
+  const rowEnd = [-1e9, -1e9, -1e9, -1e9];
   for (const e of events) {
     if (['ALARM', 'NOTE'].includes(e.event)) continue;
-    const x = roast ? e.t_roast : e.t; if (x < x0 || x > x1) continue;
-    g.beginPath(); g.moveTo(X(x), Tp); g.lineTo(X(x), B); g.stroke();
-    g.fillText(e.event, X(x) + 3, Tp + 12 + (row++ % 2) * 13);
+    const x = e.t - origin;
+    if (!inGraph(e.t) || x < x0 || x > x1) continue;
+    const px = X(x);
+    g.strokeStyle = css('--muted'); g.lineWidth = 1; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(px, Tp + 5); g.lineTo(px, B); g.stroke(); g.setLineDash([]);
+    let detail = fmtSigned(x);
+    if (e.bt !== -1 && e.event !== 'COOL') detail += `  ${T(e.bt).toFixed(0)}${TU()}`;
+    g.font = '600 12px system-ui'; const nameW = g.measureText(e.event).width;
+    g.font = '11px system-ui'; const w = nameW + 4 + g.measureText(detail).width;
+    let row = 0;
+    for (let i = 0; i < rowEnd.length; i++) { if (rowEnd[i] < px) { row = i; break; } if (rowEnd[i] < rowEnd[row]) row = i; }
+    const lx = Math.min(px + 4, Rx - w - 2), ly = Tp + 9 + row * 16;
+    g.fillStyle = css('--panel'); g.fillRect(lx - 2, ly, w + 4, 15);
+    g.fillStyle = css('--ink'); g.font = '600 12px system-ui'; g.fillText(e.event, lx, ly + 11);
+    g.fillStyle = css('--muted'); g.font = '11px system-ui'; g.fillText(detail, lx + nameW + 4, ly + 11);
+    rowEnd[row] = lx + w + 6;
   }
-  g.setLineDash([]);
   // legend
+  g.font = '11px system-ui';
   const leg = [['BT', '--bt'], ['ET', '--et'], ['RoR', '--ror'], ['true bean', '--true']];
   const legW = leg.reduce((w, [n]) => w + 22 + g.measureText(n).width, 0);
   let lx = Rx - legW - 4;
@@ -360,50 +532,141 @@ async function showReport() {
       <tr><td>RoR max / FC / drop</td><td>${R(r.max_ror).toFixed(1)} / ${R(r.ror_at_fcs).toFixed(1)} / ${R(r.ror_at_drop).toFixed(1)} ${TU()}/min</td></tr>
     </table>
     <ul>${r.notes.map(n => `<li>${n}</li>`).join('')}</ul>`;
-  $('reportDlg').showModal();
+  if (!$('reportDlg').open) $('reportDlg').showModal();
 }
 
-// ---------------------------------------------------------------- wiring
-$('load').onclick = async () => {
-  if (state && state.bean_location === 'machine' && !confirm('Beans are roasting. Discard them?')) return;
-  await act({ cmd: 'load', roaster: $('roaster').value, bean: $('bean').value });
-  history = []; events = []; $('events').innerHTML = '';
-  await refreshDef();
-  send({ cmd: 'subscribe', history_from: 0, event_seq: 0 });
-};
-$('bean').onchange = () => act({ cmd: 'bean', id: $('bean').value });
-$('power').onchange = (e) => act({ cmd: 'power', value: e.target.checked });
-$('charge').onclick = () => act({ cmd: 'charge', batch_g: fromW(+$('batch').value) });
-$('drop').onclick = () => act({ cmd: 'drop' });
-$('preheat').onclick = async () => {
-  preheatC = fromT(+$('preheatT').value);
-  await act({ cmd: 'preheat', target_C: preheatC });
-  history = []; send({ cmd: 'subscribe', history_from: 0 });
-};
-$('reset').onclick = async () => { if (confirm('Cool the machine and discard beans?')) { await act({ cmd: 'reset' }); history = []; events = []; $('events').innerHTML = ''; send({ cmd: 'subscribe', history_from: 0 }); } };
-$('repair').onclick = () => act({ cmd: 'repair' });
-$('reportBtn').onclick = showReport;
-$('speed').onchange = async (e) => {
-  const v = +e.target.value;
+// ---------------------------------------------------------------- menus
+const menus = [...document.querySelectorAll('details.menu')];
+for (const d of menus) {
+  d.addEventListener('toggle', () => {
+    if (!d.open) return;
+    for (const o of menus) if (o !== d) o.open = false;
+    updateMenus();
+  });
+  d.querySelector('.items').addEventListener('click', (e) => { if (e.target.closest('button')) d.open = false; });
+}
+document.addEventListener('click', (e) => { for (const d of menus) if (!d.contains(e.target)) d.open = false; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') for (const d of menus) d.open = false; });
+
+for (const [i, v] of SPEEDS.entries()) {
+  const b = document.createElement('button'); b.className = 'radio'; b.dataset.speed = v;
+  b.textContent = v === 0 ? 'Pause' : v === 1 ? 'Real time' : v + '×';
+  b.onclick = () => setSpeed(v);
+  $('speeds').appendChild(b);
+  if (i === 0) $('speeds').appendChild(document.createElement('hr'));
+}
+for (const v of VOLUMES) {
+  const b = document.createElement('button'); b.className = 'radio'; b.dataset.volume = v; b.textContent = v + '%';
+  b.onclick = () => { volume = v; if (snd) snd.gain.gain.value = v / 100; };
+  $('volumes').appendChild(b);
+}
+
+// Menus show live state (checks, radio marks, current environment values).
+function updateMenus() {
+  const s = state;
+  const mark = (el, on) => el.classList.toggle('checked', !!on);
+  mark($('mPower'), s && s.power);
+  mark($('mSound'), snd);
+  for (const b of document.querySelectorAll('[data-speed]')) mark(b, s && (s.paused ? +b.dataset.speed === 0 : !s.paused && +b.dataset.speed === s.time_scale));
+  for (const b of document.querySelectorAll('[data-volume]')) mark(b, +b.dataset.volume === volume);
+  for (const b of document.querySelectorAll('[data-unit]')) mark(b, units[b.dataset.unit] === b.dataset.val);
+  const roasting = s && s.phase === 'roasting';
+  for (const b of document.querySelectorAll('.menu [data-mark]')) {
+    const done = eventTime(b.dataset.mark) >= 0;
+    mark(b, done);
+    b.disabled = done || !roasting;
+  }
+  if (s) {
+    $('mEnvAmbient').textContent = `Room temperature:  ${T(s.env.ambient_C).toFixed(0)} ${TU()}`;
+    $('mEnvVolts').textContent = `Mains voltage:  ${s.env.line_voltage.toFixed(0)} V`;
+    $('mEnvAlt').textContent = `Altitude:  ${A(s.env.altitude_m).toFixed(0)} ${AU()}`;
+  }
+}
+
+async function setSpeed(v) {
   if (v === 0) await act({ cmd: 'pause', value: true });
   else { await act({ cmd: 'pause', value: false }); await act({ cmd: 'time_scale', value: v }); }
-};
-$('envApply').onclick = () => {
-  const cmd = { cmd: 'env' };
-  for (const k of ['ambient_C', 'humidity_rh', 'line_voltage', 'source_ohms', 'altitude_m', 'gas_pressure']) cmd[k] = +$('env_' + k).value;
-  cmd.ambient_C = fromT(cmd.ambient_C);
-  cmd.altitude_m = fromA(cmd.altitude_m);
-  act(cmd);
-};
+}
+
+// ---------------------------------------------------------------- dialogs
+function fillEnv(e) {
+  $('env_ambient').value = num(T(e.ambient_C), 0.1);
+  $('env_volts').value = num(e.line_voltage, 0.1);
+  $('env_ohms').value = num(e.source_ohms, 0.001);
+  $('env_gas').value = num(e.gas_pressure * 100, 1);
+  $('env_alt').value = num(A(e.altitude_m), 1);
+}
+
+function openEnv(focus) {
+  if (!state) return;
+  fillEnv(state.env);
+  $('envError').textContent = '';
+  $('envDlg').showModal();
+  const el = $('env_' + (focus || 'ambient'));
+  el.focus(); el.select();
+}
+
+// Same limits as the native app; returns [field, message] for the first bad value.
+function envProblem() {
+  const v = (id) => $(id).value === '' ? NaN : +$(id).value;
+  const amb = fromT(v('env_ambient')), volts = v('env_volts'), ohms = v('env_ohms'), gas = v('env_gas'), alt = fromA(v('env_alt'));
+  if (!(amb >= -40 && amb <= 60)) return ['env_ambient', isF() ? 'Room temperature must be between -40 and 140 °F.' : 'Room temperature must be between -40 and 60 °C.'];
+  if (!(volts >= 50 && volts <= 260)) return ['env_volts', 'Mains voltage must be between 50 and 260 V.'];
+  if (!(ohms >= 0 && ohms <= 5)) return ['env_ohms', 'Wiring resistance must be between 0 and 5 ohms.'];
+  if (!(gas >= 0 && gas <= 200)) return ['env_gas', 'Gas supply pressure must be between 0 and 200 %.'];
+  if (!(alt >= -500 && alt <= 5000)) return ['env_alt', isFt() ? 'Altitude must be between -1640 and 16400 ft.' : 'Altitude must be between -500 and 5000 m.'];
+  return null;
+}
+
+$('envForm').addEventListener('submit', async (ev) => {
+  if (!ev.submitter || ev.submitter.value !== 'ok') return;
+  const bad = envProblem();
+  if (bad) { ev.preventDefault(); $('envError').textContent = bad[1]; $(bad[0]).focus(); $(bad[0]).select(); return; }
+  await act({ cmd: 'env', ambient_C: fromT(+$('env_ambient').value), line_voltage: +$('env_volts').value,
+              source_ohms: +$('env_ohms').value, gas_pressure: +$('env_gas').value / 100, altitude_m: fromA(+$('env_alt').value) });
+});
+$('envDefaults').onclick = () => fillEnv(ENV_DEFAULTS);
+for (const b of document.querySelectorAll('[data-env]')) b.onclick = () => openEnv(b.dataset.env);
+
+$('preheatDlg').addEventListener('close', async () => {
+  if ($('preheatDlg').returnValue !== 'ok' || $('preheatT').value === '') return;
+  preheatC = fromT(+$('preheatT').value);
+  await act({ cmd: 'preheat', target_C: preheatC });
+});
+$('faultDlg').addEventListener('close', () => {
+  if ($('faultDlg').returnValue === 'ok') act({ cmd: 'fault', probe: $('faultProbe').value, type: $('faultType').value });
+});
+$('faultClear').onclick = async () => { for (const p of def.probes) await act({ cmd: 'fault', probe: p.id, type: 'none' }); };
+
+// ---------------------------------------------------------------- wiring
+async function loadRoaster(confirmText) {
+  if (state && state.bean_location === 'machine' && !confirm(confirmText)) { await refreshDef(); return; }  // puts the picker back
+  await act({ cmd: 'load', roaster: $('roaster').value, bean: $('bean').value });
+  await refreshDef();  // the cold reset that comes with a load restarts the graph
+}
+$('roaster').onchange = () => loadRoaster('Beans are roasting. Switch roaster anyway and discard them?');
+$('mReload').onclick = () => loadRoaster('Beans are roasting. Reload the roaster anyway and discard them?');
+$('bean').onchange = () => act({ cmd: 'bean', id: $('bean').value });
+$('power').onchange = (e) => act({ cmd: 'power', value: e.target.checked });
+$('mPower').onclick = () => act({ cmd: 'power', value: !(state && state.power) });
+$('charge').onclick = () => act({ cmd: 'charge', batch_g: fromW(+$('batch').value) });
+$('drop').onclick = () => act({ cmd: 'drop' });
+$('markNext').onclick = () => { const m = $('markNext').dataset.mark; if (m) act({ cmd: 'mark', event: m }); };
+for (const b of document.querySelectorAll('.menu [data-mark]')) b.onclick = () => act({ cmd: 'mark', event: b.dataset.mark });
+for (const b of document.querySelectorAll('[data-cmd]')) {
+  b.onclick = () => b.dataset.cmd === 'charge' ? $('charge').click() : act({ cmd: b.dataset.cmd });
+}
+$('mReport').onclick = showReport;
+$('mPreheat').onclick = () => { $('preheatT').value = num(T(preheatC), 1); $('preheatDlg').showModal(); $('preheatT').select(); };
+$('mReset').onclick = async () => { if (confirm('Cool the machine to room temperature and discard any beans?')) await act({ cmd: 'reset' }); };
+$('mRepair').onclick = () => act({ cmd: 'repair' });
+$('mFaults').onclick = () => $('faultDlg').showModal();
+$('mSound').onclick = () => setSound(!snd);
 // Units are one shared, saved setting: changing them here also changes the native
 // app and what Artisan receives. The state stream then calls applyUnits().
-$('uTemp').onchange = (e) => act({ cmd: 'units', temperature: e.target.value });
-$('uWeight').onchange = (e) => act({ cmd: 'units', weight: e.target.value });
-$('uAlt').onchange = (e) => act({ cmd: 'units', altitude: e.target.value });
-$('faultApply').onclick = () => act({ cmd: 'fault', probe: $('faultProbe').value, type: $('faultType').value });
-for (const b of document.querySelectorAll('[data-mark]')) b.onclick = () => act({ cmd: 'mark', event: b.dataset.mark });
+for (const b of document.querySelectorAll('[data-unit]')) b.onclick = () => act({ cmd: 'units', [b.dataset.unit]: b.dataset.val });
+$('sbSpeed').onclick = (e) => { e.stopPropagation(); $('simMenu').open = true; };
+$('sbEnv').onclick = () => openEnv('');
 window.addEventListener('resize', drawChart);
-$('sound').onchange = (e) => setSound(e.target.checked);
-$('volume').oninput = (e) => { if (snd) snd.gain.gain.value = +e.target.value / 100; };
 
 connect();

@@ -197,6 +197,8 @@ void Simulation::coldReset() {
     cracks_.clear();
     nextHistory_ = nextRorSample_ = t_;
     for (int i = 0; i < kControlCount; ++i) actual_[i] = powered_ ? target_[i] : 0.0;
+    // First entry of the fresh event log: front ends start a new graph on it.
+    addEvent("NOTE", "sim", "cold reset");
 }
 
 void Simulation::repair() {

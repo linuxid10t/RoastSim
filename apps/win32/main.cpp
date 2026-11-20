@@ -791,6 +791,17 @@ void refresh() {
         for (const auto& e : r["events"].items()) {
             std::string type = e.get("type", "");
             double t = e.get("t", 0.0);
+            // A cold reset or roaster load (from any front end) wipes the
+            // simulator's history: start a new graph if the machine is on.
+            if (type == "NOTE" && e.get("detail", "") == "cold reset") {
+                if (g.graphStart < 0 || t > g.graphStart) {
+                    g.events.clear();
+                    g.graphStart = g.st.powered ? t : -1;
+                    g.graphEnd = -1;
+                    g.wasPowered = g.st.powered != 0;
+                }
+                continue;
+            }
             // Only events of the current graph (a refetch can replay older ones).
             if (g.graphStart < 0 || t < g.graphStart || g.graphEnd >= 0) continue;
             if (type == "CHARGE") g.events.clear();
