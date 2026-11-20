@@ -86,12 +86,13 @@ json::Value sampleJson(const HistorySample& h) {
 json::Value Host::stateJson(bool full) const {
     Snapshot s;
     json::Value def;
-    double batch, scale;
+    double batch, scale, nominalVoltage;
     bool paused;
     {
         std::lock_guard<std::mutex> lk(mu_);
         s = sim_.snapshot();
         if (full) def = sim_.roaster().describe();
+        nominalVoltage = sim_.roaster().nominalLineVoltage();
         batch = batchG_;
         scale = timeScale_;
         paused = paused_;
@@ -108,6 +109,7 @@ json::Value Host::stateJson(bool full) const {
     ro["id"] = s.roaster_id;
     ro["name"] = s.roaster_name;
     ro["kind"] = roasterKindName(s.kind);
+    ro["nominal_V"] = nominalVoltage;
     v["roaster"] = ro;
     json::Value be = json::Value::object();
     be["id"] = s.bean_id;

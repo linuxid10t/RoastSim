@@ -22,9 +22,10 @@ namespace roastsim {
 // profiles land in realistic ranges; any field can be overridden per bean in
 // its JSON file under "kinetics".
 struct Kinetics {
-    // Drying, Schwartzberg-style: dX/dt = -A (X - Xeq)^2 / d_mm^2 * exp(-B / T_K)
+    // Surface evaporation uses a Schwartzberg-style rate and a vapor pressure correction.
     double dry_A = 2.0e10;
     double dry_B = 9889.0;
+    double moisture_exchange = 1.0;   // core/surface exchange relative to the drying rate coefficient
     double X_eq = 0.004;              // dry-basis floor
     double latent_J_kg = 2.5e6;       // vaporisation + desorption of bound water
     // Heat capacity of dry bean matter: a + b*T(C)  [J/(kg K)]
@@ -111,7 +112,8 @@ struct Parcel {
     double bias = 0;         // persistent exposure bias (position, shape)
     double chaff0 = 0;       // kg chaff per bean at charge
     // dynamic
-    double m_dry = 0, X = 0;
+    double m_dry = 0;
+    double water_s = 0, water_c = 0;  // kg liquid/bound water per bean in each node
     double T_s = 20, T_c = 20;
     double d = 0;
     double dev_s = 0, dev_c = 0, brown = 0, exo = 0;
@@ -125,7 +127,8 @@ struct Parcel {
     double spot_T = 0;       // hottest local surface temperature, C
 
     double area(const Kinetics& k) const { return k.shape_area * kPi * d * d; }
-    double beanMass() const { return m_dry * (1.0 + X) + chaff; }
+    double waterMass() const { return water_s + water_c; }
+    double beanMass() const { return m_dry + waterMass() + chaff; }
     double meanT(const Kinetics& k) const { return k.surface_frac * T_s + (1 - k.surface_frac) * T_c; }
     double devMean(const Kinetics& k) const { return k.surface_frac * dev_s + (1 - k.surface_frac) * dev_c; }
 };
@@ -183,7 +186,7 @@ public:
     // Advance the mixing (exposure) random processes.
     void updateMixing(double dt, double tau_mix, Rng& rng);
     // Integrate bean physics given parcel.q_in / spot_T set by the machine.
-    BatchStepResult integrate(double dt, Rng& rng);
+    BatchStepResult integrate(double dt, Rng& rng, const Environment& env = Environment{});
     // Remove a fraction of beans (ejected from a fluid bed).
     void removeFraction(double frac);
 

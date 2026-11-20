@@ -388,6 +388,34 @@ TEST(sound_follows_the_machine) {
     host.stop();
 }
 
+TEST(roaster_load_resets_wall_voltage) {
+    HostConfig cfg;
+    cfg.data_dir = rstest::dataDir();
+    cfg.roaster = "spouted_bed_pilot";
+    cfg.http_enabled = cfg.modbus_enabled = false;
+    Host host(cfg);
+    const bool started = host.start(nullptr);
+    CHECK(started);
+    if (!started) return;
+    auto send = [&](const char* text) {
+        CHECK(host.command(json::Value::parse(text), "test").getBool("ok", false));
+    };
+    auto checkVoltage = [&](double actualVoltage, double nominalVoltage) {
+        const auto s = host.stateJson(false);
+        CHECK(s["env"].get("line_voltage", 0.0) == actualVoltage);
+        CHECK(s["roaster"].get("nominal_V", 0.0) == nominalVoltage);
+    };
+    checkVoltage(230, 230);
+    send(R"({"cmd":"env","line_voltage":216,"humidity_rh":63})");
+    send(R"({"cmd":"reset"})");
+    checkVoltage(216, 230);
+    send(R"({"cmd":"load","roaster":"popper_modded"})");
+    checkVoltage(120, 120);
+    send(R"({"cmd":"load","roaster":"spouted_bed_pilot"})");
+    checkVoltage(230, 230);
+    CHECK(host.snapshot().env.humidity_rh == 63);
+}
+
 TEST(c_api) {
     char err[256] = {0};
     std::string cfg = "{\"data_dir\":\"" + rstest::dataDir() + "\",\"http_enabled\":false,\"modbus_enabled\":false,"

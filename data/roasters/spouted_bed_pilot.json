@@ -1,0 +1,28 @@
+{
+  "id": "spouted_bed_pilot",
+  "name": "Spouted-bed roaster (500 g)",
+  "description": "230 V spouted-bed roaster with independent heater and fan controls for 200–500 g batches.",
+  "kind": "fluid_bed",
+  "batch": { "default_g": 350, "min_g": 200, "max_g": 500 },
+  "reference_roast": { "bean": "kenya_pilot_blend", "heat_pct": 85 },
+  "controls": [
+    { "id": "heat", "label": "Heater", "default": 0 },
+    { "id": "fan", "label": "Fan", "default": 100 }
+  ],
+  "probes": [
+    { "id": "BT", "label": "Product thermocouple", "location": "bean_mass", "tau_air_s": 35.9, "tau_bean_s": 5, "resolution": 0.1, "noise_sd": 0 },
+    { "id": "ET", "label": "Inlet air", "location": "inlet_air", "tau_air_s": 2, "resolution": 0.1, "noise_sd": 0 },
+    { "id": "Exhaust", "label": "Exhaust", "location": "exhaust_air", "tau_air_s": 2, "resolution": 0.1, "noise_sd": 0 }
+  ],
+  "fluid_bed": {
+    "wiring": "independent",
+    "heater_W": 7800, "nominal_V": 230,
+    "element_C": 105, "element_eff": 0.90, "element_loss_UA": 0.8,
+    "fan_max_flow": 0.031, "fan_tau": 1.0, "fan_min_pct": 20,
+    "wall_C": 650, "wall_UA_in": 10, "wall_UA_out": 1.6,
+    "h_ref": 39.3, "h_flow_exp": 0.46,
+    "fluidize_flow_per_kg": 0.030, "eject_agitation": 7,
+    "unevenness": 0.05, "bt_probe_full_kg": 0.503,
+    "chamber_diameter_m": 0.15, "chamber_height_m": 0.30
+  }
+}

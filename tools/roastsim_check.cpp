@@ -7,10 +7,8 @@
 //   roastsim_check --all                             reference roast for every roaster
 //   add --json for machine-readable output
 //
-// The reference roast is deliberately simple and machine-agnostic: controls at
-// their defaults, heat fixed (100 % fluid bed / stir pan, 85 % drums), drums
-// preheated, default batch, drop when development reaches 20 % DTR. It is a
-// sanity check that a preset behaves like a coffee roaster, not a profile.
+// The reference roast is a sanity check with fixed heat, a default batch and
+// drop at 20 % DTR. Presets can specify their reference heat and bean.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -84,7 +82,8 @@ int validateFiles(const std::string& dir, json::Value& out) {
                 if (!c.addRoasterJson(text, &err)) issue(name, "error", err);
                 // Unknown keys are silently ignored by the loader: flag likely typos.
                 static const char* top[] = {"id", "name", "description", "kind", "batch", "controls", "probes",
-                                            "fluid_bed", "drum", "stir_pan", "cooling", "charge_bean_temp_C", "visual"};
+                                            "fluid_bed", "drum", "stir_pan", "cooling", "charge_bean_temp_C", "visual",
+                                            "reference_roast"};
                 for (const auto& k : v.keys()) {
                     bool known = false;
                     for (const char* t : top) known |= k == t;
@@ -140,7 +139,7 @@ json::Value baseScript(const RoasterDef& r, const std::string& bean, const Optio
     double batch = o.batch > 0 ? o.batch : r.batch.default_g;
     s["batch_g"] = batch;
     bool drum = r.kind == RoasterKind::Drum;
-    double heat = o.heat >= 0 ? o.heat : (drum ? 85.0 : 100.0);
+    double heat = o.heat >= 0 ? o.heat : r.raw["reference_roast"].get("heat_pct", drum ? 85.0 : 100.0);
     double preheat = o.preheat >= 0 ? o.preheat : (drum ? 200.0 : 0.0);
     if (preheat > 0) s["preheat_C"] = preheat;
     json::Value set = json::Value::object();
@@ -309,6 +308,9 @@ int main(int argc, char** argv) {
         if (o.json) runs.push(resultJson(r.id, bean, res));
         else printRow(r.id, bean, res);
     };
+    auto referenceBean = [&](const RoasterDef& r) {
+        return o.bean.empty() ? r.raw["reference_roast"].get("bean", "colombia_washed") : o.bean;
+    };
 
     if (!o.roaster.empty()) {
         const RoasterDef* r = cat.roaster(o.roaster);
@@ -316,7 +318,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "unknown roaster '%s'\n", o.roaster.c_str());
             return 2;
         }
-        std::string bean = o.bean.empty() ? "colombia_washed" : o.bean;
+        std::string bean = referenceBean(*r);
         if (!cat.bean(bean)) {
             std::fprintf(stderr, "unknown bean '%s'\n", bean.c_str());
             return 2;
@@ -336,7 +338,7 @@ int main(int argc, char** argv) {
         }
     }
     if (o.all) {
-        for (const auto& r : cat.roasters()) runOne(r, o.bean.empty() ? "colombia_washed" : o.bean);
+        for (const auto& r : cat.roasters()) runOne(r, referenceBean(r));
     }
     if (o.json) {
         out["runs"] = runs;

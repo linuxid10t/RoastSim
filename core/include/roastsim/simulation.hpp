@@ -107,8 +107,10 @@ public:
     Simulation();
     ~Simulation();
 
-    // Loads (or replaces) the roaster and bean; resets to a cold, empty machine.
+    // Loads a cold, empty roaster and sets the wall voltage to its rating.
     void load(const RoasterDef& roaster, const BeanSpec& bean);
+    // Load with an explicit starting environment, including wall voltage.
+    void load(const RoasterDef& roaster, const BeanSpec& bean, const Environment& env);
     void setBean(const BeanSpec& bean);   // for the next charge
     void setSeed(std::uint64_t seed);
     void setParcelCount(int n) { parcelCount_ = std::max(1, std::min(5000, n)); }

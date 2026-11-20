@@ -17,7 +17,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 |---|---|---|
 | `state` | `full` (bool) | live state (below); `full` adds `roaster_def` |
 | `list` | | `roasters` (id, name, kind, controls, probes, batch limits), `beans` |
-| `load` | `roaster`, `bean` (either optional) | load presets; cold, empty machine |
+| `load` | `roaster`, `bean` (either optional) | load a cold, empty machine and set `env.line_voltage` to the roaster's rating |
 | `bean` | `id` | green coffee for the next charge |
 | `set` | `control` + `value`, or `controls: {heat: 80, fan: 60}` | set controls in %. Names: `heat` (`burner`, `gas`, `power`), `fan` (`air`, `airflow`, `damper`), `drum`, `stir`, `voltage` (`variac`), `cooling` |
 | `power` | `value` (bool; toggles if absent) | master switch (default **off**): with the machine switched off every actuator is forced to 0 and the machine just cools passively, while the control settings are kept for when it is switched on; `preheat` refuses to run |
@@ -57,7 +57,7 @@ Alarm names (and C API bit numbers): `thermostat_open` (0), `fuse_blown` (1), `b
 ```json
 {
   "type": "state", "t": 812.3, "t_roast": 455.1, "phase": "roasting", "bean_location": "machine",
-  "roaster": {"id": "drum_home_1kg", "name": "...", "kind": "drum"},
+  "roaster": {"id": "drum_home_1kg", "name": "...", "kind": "drum", "nominal_V": 120},
   "bean": {"id": "colombia_washed", "name": "..."},
   "bt": 188.2, "et": 171.5, "ror_bt": 7.1, "ror_et": 2.0, "eta_dry_s": -1, "eta_fc_s": 142,
   "probes": [{"id": "BT", "location": "bean_mass", "value": 188.2, "fault": false}],
@@ -71,6 +71,8 @@ Alarm names (and C API bit numbers): `thermostat_open` (0), `fuse_blown` (1), `b
   "logger_connected": true, "event_seq": 7
 }
 ```
+
+`roaster.nominal_V` is the preset's wall-voltage default. `env.line_voltage` is the current wall voltage before wiring sag.
 
 `eta_dry_s` / `eta_fc_s` are the simulator's estimate of roast seconds until it would call DRY (bean mass mean at 150 C) and first crack (2 % of beans cracked, using each bean group's own crack threshold). The beans are projected forward along a Newton heating curve: they level off at the temperature the machine is driving them towards (`machine.bean_env_C`: hot air, drum wall, pan and radiation weighted by how strongly each couples to the beans), with the time constant that matches their current smoothed heating rate. Values are `-1` when not applicable (not roasting, the first 20 s after CHARGE, the event has happened or been marked, or, for first crack, before DRY: until drying ends evaporation slows the beans in a way the projection can't see) and `-2` when the milestone is still ahead but won't be reached at the current heat (stalling). The estimate assumes the controls stay where they are, so it moves when you change heat or airflow, and it tightens as the milestone nears. The C API has the same values in `rs_state.eta_dry_s` / `eta_fc_s` (API 1.2).
 

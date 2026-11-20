@@ -10,7 +10,7 @@ const PHASES = ['Drying', 'Maillard', 'Development'];
 const MARKS = [['DRY', 'Mark DRY'], ['FCs', 'Mark FC start'], ['FCe', 'Mark FC end'], ['SCs', 'Mark SC start'], ['SCe', 'Mark SC end']];
 const SPEEDS = [0, 1, 2, 5, 10, 30, 60];
 const VOLUMES = [25, 50, 75, 100];
-const ENV_DEFAULTS = { ambient_C: 22, line_voltage: 120, source_ohms: 0.25, gas_pressure: 1, altitude_m: 0 };
+const ENV_DEFAULTS = { ambient_C: 22, line_voltage: 120, source_ohms: 0.25, gas_pressure: 1, altitude_m: 0, humidity_rh: 45 };
 
 let ws = null, reqId = 0, serverPollTimer;
 const pending = new Map();
@@ -648,6 +648,7 @@ function fillEnv(e) {
   $('env_ohms').value = num(e.source_ohms, 0.001);
   $('env_gas').value = num(e.gas_pressure * 100, 1);
   $('env_alt').value = num(A(e.altitude_m), 1);
+  $('env_humidity').value = num(e.humidity_rh, 0.1);
 }
 
 function openEnv(focus) {
@@ -668,6 +669,8 @@ function envProblem() {
   if (!(ohms >= 0 && ohms <= 5)) return ['env_ohms', 'Wiring resistance must be between 0 and 5 ohms.'];
   if (!(gas >= 0 && gas <= 200)) return ['env_gas', 'Gas supply pressure must be between 0 and 200 %.'];
   if (!(alt >= -500 && alt <= 5000)) return ['env_alt', isFt() ? 'Altitude must be between -1640 and 16400 ft.' : 'Altitude must be between -500 and 5000 m.'];
+  const rh = v('env_humidity');
+  if (!(rh >= 0 && rh <= 100)) return ['env_humidity', 'Relative humidity must be between 0 and 100 %.'];
   return null;
 }
 
@@ -676,9 +679,10 @@ $('envForm').addEventListener('submit', async (ev) => {
   const bad = envProblem();
   if (bad) { ev.preventDefault(); $('envError').textContent = bad[1]; $(bad[0]).focus(); $(bad[0]).select(); return; }
   await act({ cmd: 'env', ambient_C: fromT(+$('env_ambient').value), line_voltage: +$('env_volts').value,
-              source_ohms: +$('env_ohms').value, gas_pressure: +$('env_gas').value / 100, altitude_m: fromA(+$('env_alt').value) });
+              source_ohms: +$('env_ohms').value, gas_pressure: +$('env_gas').value / 100, altitude_m: fromA(+$('env_alt').value),
+              humidity_rh: +$('env_humidity').value });
 });
-$('envDefaults').onclick = () => fillEnv(ENV_DEFAULTS);
+$('envDefaults').onclick = () => fillEnv({ ...ENV_DEFAULTS, line_voltage: state?.roaster?.nominal_V ?? ENV_DEFAULTS.line_voltage });
 for (const b of document.querySelectorAll('[data-env]')) b.onclick = () => openEnv(b.dataset.env);
 
 $('preheatDlg').addEventListener('close', async () => {

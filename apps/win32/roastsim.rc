@@ -5,7 +5,7 @@
 1 24 "roastsim.manifest"
 
 // Unit labels that need non-ASCII glyphs (degree sign, ohm) are set at run time.
-IDD_ENVIRONMENT DIALOGEX 0, 0, 262, 172
+IDD_ENVIRONMENT DIALOGEX 0, 0, 262, 192
 STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Environment"
 FONT 9, "Segoe UI", 400, 0, 1
@@ -27,10 +27,13 @@ BEGIN
     LTEXT           "Altitude", -1, 10, 114, 96, 8
     EDITTEXT        IDC_ENV_ALT, 110, 112, 54, 13, ES_AUTOHSCROLL
     LTEXT           "m", IDC_ENV_ALT_U, 168, 114, 84, 8
-    CONTROL         "", -1, "Static", SS_ETCHEDHORZ, 10, 136, 242, 1
-    PUSHBUTTON      "Defaults", IDC_ENV_DEFAULTS, 10, 148, 56, 15
-    DEFPUSHBUTTON   "OK", IDOK, 136, 148, 56, 15
-    PUSHBUTTON      "Cancel", IDCANCEL, 196, 148, 56, 15
+    LTEXT           "Relative humidity", -1, 10, 134, 96, 8
+    EDITTEXT        IDC_ENV_HUMIDITY, 110, 132, 54, 13, ES_AUTOHSCROLL
+    LTEXT           "% RH", -1, 168, 134, 84, 8
+    CONTROL         "", -1, "Static", SS_ETCHEDHORZ, 10, 156, 242, 1
+    PUSHBUTTON      "Defaults", IDC_ENV_DEFAULTS, 10, 168, 56, 15
+    DEFPUSHBUTTON   "OK", IDOK, 136, 168, 56, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 196, 168, 56, 15
 END
 
 IDD_PREHEAT DIALOGEX 0, 0, 220, 88

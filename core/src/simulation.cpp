@@ -50,9 +50,16 @@ Simulation::~Simulation() = default;
 void Simulation::setSeed(std::uint64_t seed) { rng_.reseed(seed); }
 
 void Simulation::load(const RoasterDef& roaster, const BeanSpec& bean) {
+    Environment env = env_;
+    env.line_voltage = roaster.nominalLineVoltage();
+    load(roaster, bean, env);
+}
+
+void Simulation::load(const RoasterDef& roaster, const BeanSpec& bean, const Environment& env) {
     machine_.reset();
     roaster_ = roaster;
     bean_ = bean;
+    env_ = env;
     machine_ = createMachine(roaster_);
     probes_.clear();
     for (const auto& pd : roaster_.probes) probes_.emplace_back(pd);
@@ -307,7 +314,7 @@ void Simulation::stepOnce(double dt) {
 
     BatchStepResult res;
     if (beanLoc_ == BeanLocation::Tray) stepTray(dt);
-    if (beanLoc_ != BeanLocation::None) res = beans_.integrate(dt, rng_);
+    if (beanLoc_ != BeanLocation::None) res = beans_.integrate(dt, rng_, env_);
     popsFc_ += static_cast<std::uint64_t>(res.pops_fc);
     popsSc_ += static_cast<std::uint64_t>(res.pops_sc);
     for (const CrackPop& c : res.cracks) {

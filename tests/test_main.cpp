@@ -49,6 +49,24 @@ void checkSensible(const ScenarioResult& r, double fcMin, double fcMax) {
     CHECK(r.report.drop_s > r.report.fcs_s);
 }
 
+void startPilotRoast(Simulation& sim, double batch, double airflow, double inlet) {
+    const auto& roaster = *catalog().roaster("spouted_bed_pilot");
+    const auto& fluid = roaster.fluid;
+    Environment env;
+    env.ambient_C = 20;
+    env.source_ohms = 0;
+    sim.setEnvironment(env);
+    sim.setSeed(7);
+    sim.load(roaster, *catalog().bean("kenya_pilot_blend"));
+    sim.setPower(true, "test");
+    sim.setControl(Control::Fan, 100 * airflow / fluid.fan_max_flow);
+    // Electrical power required for the measured inlet temperature at steady state.
+    const double heat = (inlet - env.ambient_C) * (airflow * kAirCp + fluid.element_loss_UA / fluid.element_eff);
+    sim.setControl(Control::Heat, 100 * heat / fluid.heater_W);
+    sim.step(600);
+    CHECK(sim.charge(batch, "test"));
+}
+
 }  // namespace
 
 TEST(json_roundtrip) {
@@ -73,6 +91,36 @@ TEST(catalog_loads_all_presets) {
     CHECK(catalog().beans().size() >= 6);
     CHECK(catalog().roaster("popper_stock") != nullptr);
     CHECK(catalog().roaster("stir_pan") != nullptr);
+}
+
+TEST(electric_roaster_families_use_rated_voltage) {
+    Simulation sim;
+    const auto& bean = *catalog().bean("colombia_washed");
+    RoasterDef drum = *catalog().roaster("drum_home_1kg");
+    drum.drum.nominal_V = 240;
+    sim.load(drum, bean);
+    CHECK(sim.environment().line_voltage == 240);
+    RoasterDef pan = *catalog().roaster("stir_pan");
+    pan.pan.nominal_V = 220;
+    sim.load(pan, bean);
+    CHECK(sim.environment().line_voltage == 220);
+    sim.load(*catalog().roaster("drum_shop_5kg_gas"), bean);
+    CHECK(sim.environment().line_voltage == 120);
+}
+
+TEST(scenario_uses_rated_voltage_unless_overridden) {
+    auto checkVoltage = [](const char* recipe, double volts) {
+        ScenarioResult result;
+        bool sampled = false;
+        CHECK(runScenario(script(recipe), catalog(), result, [&](const Simulation& sim) {
+            sampled = true;
+            CHECK(sim.environment().line_voltage == volts);
+            CHECK(std::abs(sim.snapshot().tele.voltage_V - volts) < 1e-9);
+        }));
+        CHECK(sampled);
+    };
+    checkVoltage(R"({"roaster":"spouted_bed_pilot","max_s":0.05,"env":{"source_ohms":0}})", 230);
+    checkVoltage(R"({"roaster":"spouted_bed_pilot","max_s":0.05,"env":{"source_ohms":0,"line_voltage":218}})", 218);
 }
 
 TEST(deterministic_with_seed) {
@@ -117,6 +165,128 @@ TEST(air_roaster_low_fan_stalls_bed) {
     bool stalled = false;
     for (const auto& e : r.events) stalled |= e.type == "ALARM" && e.detail == "bed_stalled";
     CHECK(stalled);
+}
+
+TEST(fluid_bed_wall_heat_balances_during_fan_coastdown) {
+    RoasterDef def = *catalog().roaster("air_roaster");
+    def.fluid.wall_UA_in = 90;
+    def.fluid.wall_UA_out = 0;
+    auto machine = createMachine(def);
+    Environment env;
+    MachineInputs in;
+    in.env = &env;
+    machine->reset(env);
+    in.u[static_cast<int>(Control::Heat)] = 1;
+    constexpr double dt = Simulation::kStep;
+    for (int i = 0; i < 200; ++i) machine->step(dt, in);
+    CHECK(machine->telemetry().element_C > env.ambient_C + 100);
+    CHECK(machine->telemetry().wall_C == env.ambient_C);
+
+    auto checkExchange = [&] {
+        const double previousWall = machine->telemetry().wall_C;
+        machine->step(dt, in);
+        const auto& state = machine->telemetry();
+        const double wallEnergy = def.fluid.wall_C * (state.wall_C - previousWall);
+        const double airEnergy = state.airflow_kg_s * kAirCp * (state.inlet_C - state.exhaust_C) * dt;
+        CHECK(std::abs(wallEnergy - airEnergy) < 1e-8);
+        CHECK_RANGE(state.exhaust_C, std::min(previousWall, state.inlet_C) - 1e-9,
+                    std::max(previousWall, state.inlet_C) + 1e-9);
+    };
+    in.u[static_cast<int>(Control::Fan)] = 1;
+    for (int i = 0; i < 300; ++i) checkExchange();
+    in.u[static_cast<int>(Control::Heat)] = 0;
+    in.u[static_cast<int>(Control::Fan)] = 0;
+    for (int i = 0; i < 300; ++i) checkExchange();
+}
+
+TEST(bean_drying_conserves_mass_and_responds_to_humidity) {
+    auto evaporated = [](double humidity) {
+        Environment env;
+        env.ambient_C = 35;
+        env.humidity_rh = humidity;
+        Rng rng;
+        BeanBatch beans;
+        beans.init(*catalog().bean("colombia_washed"), 0.1, 3, 35, rng);
+        const double initialMass = beans.totalMass();
+        double evaporated = 0, lostMass = 0;
+        for (int i = 0; i < 2400; ++i) {
+            for (auto& p : beans.parcels()) {
+                p.T_s = 165;
+                p.T_c = 145;
+            }
+            const auto step = beans.integrate(Simulation::kStep, rng, env);
+            evaporated += step.water_evap_kg;
+            lostMass += step.water_evap_kg + step.organic_loss_kg + step.chaff_released_kg;
+        }
+        const double surface = beans.kinetics().surface_frac;
+        for (const auto& p : beans.parcels()) {
+            CHECK(p.water_s > 0);
+            CHECK(p.water_c / (1.0 - surface) > p.water_s / surface);
+        }
+        CHECK(std::abs(initialMass - beans.totalMass() - lostMass) < 1e-12);
+        return evaporated;
+    };
+    const double dryAir = evaporated(10);
+    const double humidAir = evaporated(90);
+    CHECK(dryAir > humidAir);
+    CHECK(humidAir > 0);
+}
+
+TEST(spouted_bed_reproduces_measured_roasts) {
+    std::string raw, parseError;
+    CHECK(readTextFile(rstest::dataDir() + "/calibration/spouted_bed_measurements.json", raw));
+    const auto roasts = json::Value::parse(raw, &parseError);
+    CHECK(parseError.empty());
+    CHECK(roasts.size() == 3);
+    for (const auto& roast : roasts.items()) {
+        const double batch = roast.get("batch_g", 0.0), flow = roast.get("airflow_kg_s", 0.0);
+        const double inlet = roast.get("inlet_setpoint_C", 0.0);
+        Simulation sim;
+        startPilotRoast(sim, batch, flow, inlet);
+        double t = 0, btError = 0, inletError = 0, massError = 0, moistureError = 0;
+        for (const auto& sample : roast["bt_C"].items()) {
+            sim.step(sample.at(0).num() - t);
+            t = sample.at(0).num();
+            const auto s = sim.snapshot();
+            CHECK(std::abs(s.tele.airflow_kg_s - flow) < 1e-7);
+            btError += std::pow(s.bt - sample[1].num(), 2);
+        }
+        const auto& airSamples = roast["inlet_C"].items();
+        // The measured points are the inlet plateau, after the charge transient.
+        const double plateau = sim.snapshot().et;
+        for (const auto& sample : airSamples) inletError += std::pow(plateau - sample[1].num(), 2);
+        for (const auto& sample : roast["cooled_bean_samples"].items()) {
+            Simulation cooled;
+            startPilotRoast(cooled, batch, flow, inlet);
+            cooled.step(sample.at(0).num());
+            CHECK(cooled.drop("test"));
+            cooled.step(60);
+            const auto s = cooled.snapshot();
+            massError += std::pow(s.beans.weight_loss_pct - sample[1].num(), 2);
+            moistureError += std::pow(s.beans.moisture_pct - sample[2].num(), 2);
+        }
+        const auto rmse = [&](double error, const char* key) { return std::sqrt(error / roast[key].size()); };
+        const bool holdout = roast.get("split", "") == "holdout";
+        CHECK_RANGE(rmse(btError, "bt_C"), 0, holdout ? 15 : 10);
+        CHECK_RANGE(rmse(massError, "cooled_bean_samples"), 0, 2);
+        CHECK_RANGE(rmse(moistureError, "cooled_bean_samples"), 0, 1);
+        if (!airSamples.empty()) CHECK_RANGE(rmse(inletError, "inlet_C"), 0, 3);
+    }
+}
+
+TEST(spouted_bed_fan_step_changes_inlet_and_bean_heating) {
+    Simulation steady, stepped;
+    for (Simulation* sim : {&steady, &stepped}) {
+        startPilotRoast(*sim, 500, 0.0228, 250);
+        sim->step(120);
+    }
+    stepped.setControl(Control::Fan, 100);
+    steady.step(45);
+    stepped.step(45);
+    const auto before = steady.snapshot(), after = stepped.snapshot();
+    CHECK(before.tele.airflow_kg_s < after.tele.airflow_kg_s);
+    CHECK(before.tele.inlet_C > after.tele.inlet_C + 20);
+    CHECK(before.beans.T_mean > after.beans.T_mean);
 }
 
 TEST(drum_home_roast) {

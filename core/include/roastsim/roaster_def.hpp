@@ -52,6 +52,7 @@ struct FluidBedParams {
     double fluidize_flow_per_kg = 0.045;  // kg/s of air needed per kg of green beans
     double eject_agitation = 2.6;
     double unevenness = 0.08;
+    double bt_probe_full_kg = 0;     // charge at which full probe immersion is reached; 0 ignores batch size
     bool thermostat = false;        // bimetal cut-out sensing inlet air
     double thermostat_open_C = 240;
     double thermostat_close_C = 215;
@@ -144,6 +145,7 @@ struct RoasterDef {
     const ControlDef* control(Control c) const;
     bool hasControl(Control c) const { return control(c) != nullptr; }
     int probeIndex(const std::string& id) const;
+    double nominalLineVoltage() const;
 
     static bool fromJson(const json::Value& v, RoasterDef& out, std::string* err);
     json::Value describe() const;  // compact description for UIs/clients

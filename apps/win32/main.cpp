@@ -1214,7 +1214,7 @@ bool fieldError(HWND dlg, int id, const wchar_t* msg) {
 }
 
 bool applyEnvironment(HWND dlg) {
-    double amb, volts, ohms, gas, alt;
+    double amb, volts, ohms, gas, alt, rh;
     if (!readNumber(dlg, IDC_ENV_AMBIENT, amb) || fromT(amb) < -40 || fromT(amb) > 60)
         return fieldError(dlg, IDC_ENV_AMBIENT, isF() ? L"Room temperature must be between -40 and 140 °F."
                                                        : L"Room temperature must be between -40 and 60 °C.");
@@ -1227,6 +1227,8 @@ bool applyEnvironment(HWND dlg) {
     if (!readNumber(dlg, IDC_ENV_ALT, alt) || fromA(alt) < -500 || fromA(alt) > 5000)
         return fieldError(dlg, IDC_ENV_ALT, isFt() ? L"Altitude must be between -1640 and 16400 ft."
                                                     : L"Altitude must be between -500 and 5000 m.");
+    if (!readNumber(dlg, IDC_ENV_HUMIDITY, rh) || rh < 0 || rh > 100)
+        return fieldError(dlg, IDC_ENV_HUMIDITY, L"Relative humidity must be between 0 and 100 %.");
     Value c = Value::object();
     c["cmd"] = "env";
     c["ambient_C"] = fromT(amb);
@@ -1234,6 +1236,7 @@ bool applyEnvironment(HWND dlg) {
     c["source_ohms"] = ohms;
     c["gas_pressure"] = gas / 100.0;
     c["altitude_m"] = fromA(alt);
+    c["humidity_rh"] = rh;
     Value r = command(c);
     if (!r.getBool("ok", true)) {
         MessageBoxW(dlg, widen(r.get("error", "failed")).c_str(), L"Environment", MB_ICONWARNING);
@@ -1242,12 +1245,13 @@ bool applyEnvironment(HWND dlg) {
     return true;
 }
 
-void fillEnvironment(HWND dlg, double ambC, double volts, double ohms, double gas, double altM) {
+void fillEnvironment(HWND dlg, double ambC, double volts, double ohms, double gas, double altM, double rh) {
     SetDlgItemTextW(dlg, IDC_ENV_AMBIENT, num(T(ambC), 0.1).c_str());
     SetDlgItemTextW(dlg, IDC_ENV_VOLTS, num(volts, 0.1).c_str());
     SetDlgItemTextW(dlg, IDC_ENV_OHMS, num(ohms, 0.001).c_str());
     SetDlgItemTextW(dlg, IDC_ENV_GAS, num(gas * 100.0, 1).c_str());
     SetDlgItemTextW(dlg, IDC_ENV_ALT, num(A(altM), 1).c_str());
+    SetDlgItemTextW(dlg, IDC_ENV_HUMIDITY, num(rh, 0.1).c_str());
 }
 
 // lParam: the edit control to focus first (the menu item picked), or 0.
@@ -1256,7 +1260,7 @@ INT_PTR CALLBACK envDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_INITDIALOG: {
             Value e = cmd1("state")["env"];
             fillEnvironment(dlg, e.get("ambient_C", 22.0), e.get("line_voltage", 120.0), e.get("source_ohms", 0.25),
-                            e.get("gas_pressure", 1.0), e.get("altitude_m", 0.0));
+                            e.get("gas_pressure", 1.0), e.get("altitude_m", 0.0), e.get("humidity_rh", 45.0));
             SetDlgItemTextW(dlg, IDC_ENV_AMBIENT_U, TU());
             SetDlgItemTextW(dlg, IDC_ENV_ALT_U, isFt() ? L"ft" : L"m");
             HWND focus = GetDlgItem(dlg, lp ? static_cast<int>(lp) : IDC_ENV_AMBIENT);
@@ -1267,8 +1271,8 @@ INT_PTR CALLBACK envDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             switch (LOWORD(wp)) {
                 case IDC_ENV_DEFAULTS: {
-                    // The simulator's built-in environment (core Environment defaults).
-                    fillEnvironment(dlg, 22.0, 120.0, 0.25, 1.0, 0.0);
+                    double nominalVoltage = cmd1("state")["roaster"].get("nominal_V", 120.0);
+                    fillEnvironment(dlg, 22.0, nominalVoltage, 0.25, 1.0, 0.0, 45.0);
                     return TRUE;
                 }
                 case IDOK:

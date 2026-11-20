@@ -51,7 +51,7 @@ On Linux, port 502 needs privileges. Use `--modbus-port 5020` and set the same p
 
 * **Power:** the machine boots switched off. Flip the power switch (web UI, native app, console `power on`) before preheating or roasting. Switched off, the dials keep their settings but nothing heats, blows or turns, and the machine just cools to ambient. In the Win32 app and the web UI the graph starts when you switch on and ends with the roast report at COOL, when the UI switches the machine off again.
 * **Roast:** pick a roaster and bean, set the batch, **Preheat** (drums), set heat/fan, **Charge**, watch for the turning point, DRY and first crack (with crack sounds), then **Drop**. The roast report (times, DTR, Agtron whole/ground/spread, weight loss, defects) appears when cooling ends.
-* **Environment:** ambient temperature, line voltage and sag (big for poppers), altitude (less air mass), humidity, gas pressure.
+* **Environment:** ambient temperature, line voltage and sag, altitude, humidity and gas pressure. Loading a roaster sets its rated wall voltage. Use the Environment dialog to simulate a different supply.
 * **Faults:** open/shorted/drifting/spiking probes to test Artisan setups; blow the popper's thermal fuse by choking its airflow, then **Repair**.
 * **Speed:** pause, or run 1–120× when no logger is connected. Artisan connecting locks it to real time.
 * **Sound:** hear the blower, burner and drum, the beans tumbling, and every first and second crack, voiced from each bean's size, hardness and moisture (a dense Kenya pops loud and deep, a decaf barely ticks). Use **Simulation ▸ Sound** in the Win32 app, the **Sound** checkbox in the web UI, or `roastsimd --sound`. `roastsim_sound` renders WAV files offline. See [docs/SOUND.md](docs/SOUND.md).

@@ -1,5 +1,7 @@
 #include "roastsim/roaster_def.hpp"
 
+#include <cmath>
+
 namespace roastsim {
 
 const ControlDef* RoasterDef::control(Control c) const {
@@ -14,6 +16,16 @@ int RoasterDef::probeIndex(const std::string& pid) const {
     return -1;
 }
 
+double RoasterDef::nominalLineVoltage() const {
+    double volts = 0;
+    switch (kind) {
+        case RoasterKind::FluidBed: volts = fluid.nominal_V; break;
+        case RoasterKind::Drum: volts = drum.nominal_V; break;
+        case RoasterKind::StirPan: volts = pan.nominal_V; break;
+    }
+    return volts > 0 && std::isfinite(volts) ? volts : Environment{}.line_voltage;
+}
+
 namespace {
 
 void readFluid(const json::Value& v, FluidBedParams& p) {
@@ -23,7 +35,7 @@ void readFluid(const json::Value& v, FluidBedParams& p) {
     RS_F(heater_W); RS_F(nominal_V); RS_F(element_C); RS_F(element_eff); RS_F(element_loss_UA);
     RS_F(fan_max_flow); RS_F(fan_tau); RS_F(fan_min_pct); RS_F(stock_stall_frac); RS_F(wall_C);
     RS_F(wall_UA_in); RS_F(wall_UA_out); RS_F(h_ref); RS_F(h_flow_exp); RS_F(fluidize_flow_per_kg);
-    RS_F(eject_agitation); RS_F(unevenness); RS_F(thermostat_open_C); RS_F(thermostat_close_C);
+    RS_F(eject_agitation); RS_F(unevenness); RS_F(bt_probe_full_kg); RS_F(thermostat_open_C); RS_F(thermostat_close_C);
     RS_F(fuse_C); RS_F(fuse_hold_s); RS_F(pwm_period_s); RS_F(chamber_diameter_m); RS_F(chamber_height_m);
 #undef RS_F
     p.thermostat = v.getBool("thermostat", p.thermostat);

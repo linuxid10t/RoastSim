@@ -72,13 +72,14 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
     double rho = airDensityRatio(env.altitude_m) * (293.15 / toK(Ta));
     double flowTarget = P.fan_max_flow * fanFrac * rho;
     flow_ += (flowTarget - flow_) * (1.0 - std::exp(-dt / std::max(0.05, P.fan_tau)));
-    const double mcp = std::max(1e-6, flow_ * kAirCp);
+    const double airCapacityRate = flow_ * kAirCp;
+    const double mcp = std::max(1e-6, airCapacityRate);
 
     // ---- heater element
-    double QelAir = P.element_eff * mcp * (T_el_ - Ta);
+    T_in_ = Ta + P.element_eff * (T_el_ - Ta);
+    double QelAir = airCapacityRate * (T_in_ - Ta);
     double QelLoss = P.element_loss_UA * (T_el_ - Ta);
     T_el_ += (heaterP - QelAir - QelLoss) / P.element_C * dt;
-    T_in_ = Ta + P.element_eff * (T_el_ - Ta);
 
     // ---- bean bed
     BeanBatch* beans = in.beans;
@@ -141,6 +142,8 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
         double chamberVol = kPi * 0.25 * P.chamber_diameter_m * P.chamber_diameter_m * P.chamber_height_m;
         tel_.fill = beans->bulkVolume() / std::max(1e-9, chamberVol);
         tel_.bt_immersion = 0.62 + 0.28 * q;
+        if (P.bt_probe_full_kg > 0)
+            tel_.bt_immersion *= clamp01(beans->greenMass() / P.bt_probe_full_kg);
     } else {
         T_airEff_ = T_out_ = T_in_;
         tel_.agitation = 0;
@@ -151,13 +154,15 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
         tel_.bean_env_C = -1;
     }
 
-    // ---- chamber wall
-    double Tmid = 0.5 * (T_airEff_ + T_out_);
-    double Qw = P.wall_UA_in * (Tmid - T_wall_);
-    double dTw = Qw / mcp;  // never let the wall push the air past its own temperature
-    if (dTw > 0) dTw = std::min(dTw, std::max(0.0, T_out_ - T_wall_));
-    else dTw = std::max(dTw, std::min(0.0, T_out_ - T_wall_));
-    T_out_ -= dTw;
+    // ---- chamber wall: exchange with the exhaust stream downstream of the bed.
+    // The same heat leaves the air and enters the wall, including during fan coastdown.
+    double Qw = 0;
+    if (airCapacityRate > 0) {
+        double effectiveness = -std::expm1(-std::max(0.0, P.wall_UA_in) / airCapacityRate);
+        double dTw = effectiveness * (T_out_ - T_wall_);
+        Qw = airCapacityRate * dTw;
+        T_out_ -= dTw;
+    }
     T_wall_ += (Qw - P.wall_UA_out * (T_wall_ - Ta)) / P.wall_C * dt;
 
     // ---- protection devices

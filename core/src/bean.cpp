@@ -15,6 +15,23 @@ double arrhenius(double EaR, double Tref_C, double T_C) {
     return std::exp(EaR * (1.0 / toK(Tref_C) - 1.0 / toK(T)));
 }
 
+double saturationPressure(double tempC) {
+    if (tempC < 0) {
+        const double t = std::max(-60.0, tempC);
+        // Buck's vapor pressure over liquid water, extrapolated below freezing.
+        return 611.21 * std::exp((18.678 - t / 234.5) * t / (257.14 + t));
+    }
+    // IAPWS saturation-pressure correlation for ordinary water (Pa).
+    constexpr double criticalK = 647.096;
+    const double tempK = std::min(criticalK, toK(tempC));
+    const double x = 1.0 - tempK / criticalK;
+    const double root = std::sqrt(x), x2 = x * x, x3 = x2 * x;
+    const double lnRatio = -7.85951783 * x + 1.84408259 * x * root - 11.7866497 * x3
+                           + 22.6807411 * x3 * root - 15.9618719 * x3 * x
+                           + 1.80122502 * x3 * x3 * x * root;
+    return 22.064e6 * std::exp(criticalK / tempK * lnRatio);
+}
+
 void readColor(const json::Value& v, double rgb[3]) {
     if (v.isArray() && v.size() == 3)
         for (int i = 0; i < 3; ++i) rgb[i] = v[static_cast<std::size_t>(i)].num(rgb[i]);
@@ -26,7 +43,7 @@ Kinetics Kinetics::fromJson(const json::Value& v, const Kinetics& base) {
     Kinetics k = base;
     if (!v.isObject()) return k;
 #define RS_K(name) k.name = v.get(#name, k.name)
-    RS_K(dry_A); RS_K(dry_B); RS_K(X_eq); RS_K(latent_J_kg); RS_K(cp_dry_a); RS_K(cp_dry_b);
+    RS_K(dry_A); RS_K(dry_B); RS_K(moisture_exchange); RS_K(X_eq); RS_K(latent_J_kg); RS_K(cp_dry_a); RS_K(cp_dry_b);
     RS_K(k_bean); RS_K(density_ref); RS_K(density_dry_exp); RS_K(density_cond_exp); RS_K(surface_frac); RS_K(shape_area); RS_K(exo_H); RS_K(exo_k0); RS_K(exo_EaR);
     RS_K(dev_EaR); RS_K(dev_Tref); RS_K(brown_EaR); RS_K(brown_Tref); RS_K(brown_full);
     RS_K(agtron_min); RS_K(agtron_span); RS_K(agtron_tau); RS_K(organic_loss_max);
@@ -113,10 +130,12 @@ void BeanBatch::init(const BeanSpec& spec, double batch_kg, int n_parcels, doubl
         double m_bean = beanMass * rel[i] * (static_cast<double>(n_parcels) / relSum);
         double mwb = clampd(spec.moisture_wb + spec.moisture_sd * rng.normal(), 0.04, 0.2);
         p.count0 = p.count = perParcelBeans;
-        p.X0 = p.X = mwb / (1.0 - mwb);
+        p.X0 = mwb / (1.0 - mwb);
         double chaffBean = m_bean * spec.chaff_frac;
         p.chaff0 = p.chaff = chaffBean;
         p.m_dry0 = p.m_dry = (m_bean - chaffBean) * (1.0 - mwb);
+        p.water_s = k_.surface_frac * p.m_dry * p.X0;
+        p.water_c = p.m_dry * p.X0 - p.water_s;
         double vol = m_bean / k_.density_ref;  // size from mass only (see Kinetics::density_ref)
         p.d0 = p.d = std::cbrt(6.0 * vol / kPi);
         p.fc_thr = spec.fc_temp + spec.fc_sd * rng.normal();
@@ -147,27 +166,44 @@ void BeanBatch::removeFraction(double frac) {
     for (auto& p : parcels_) p.count *= (1.0 - frac);
 }
 
-BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
+BatchStepResult BeanBatch::integrate(double dt, Rng& rng, const Environment& env) {
     BatchStepResult res;
+    if (dt <= 0) return res;
     const Kinetics& k = k_;
     const double phiS = k.surface_frac, phiC = 1.0 - k.surface_frac;
     const double kin = spec_.kinetics_scale;
     const double rhoRel = spec_.density > 0 ? k.density_ref / spec_.density : 1.0;
     const double dryF = std::pow(rhoRel, k.density_dry_exp);
     const double condF = std::pow(rhoRel, k.density_cond_exp);
+    const double drying = std::max(0.0, k.dry_A) * dryF;
+    const double moistureExchange = std::max(0.0, k.moisture_exchange);
+    const double vaporAir = clamp01(env.humidity_rh / 100.0) * saturationPressure(env.ambient_C);
 
     for (auto& p : parcels_) {
         if (p.count <= 0) continue;
         const double Tm = phiS * p.T_s + phiC * p.T_c;
         const double TmK = toK(Tm);
 
-        // --- drying
-        double Xex = std::max(0.0, p.X - k.X_eq);
-        double dmm = p.d0 * 1000.0;
-        double dXdt = -k.dry_A * Xex * Xex / (dmm * dmm) * std::exp(-k.dry_B / TmK) * dryF;
-        double dX = std::max(dXdt * dt, -Xex);
-        double evapKg = -dX * p.m_dry;               // per bean
-        double Qevap = k.latent_J_kg * evapKg / dt;  // W per bean
+        // --- moisture exchange and evaporation
+        const double dryS = phiS * p.m_dry, dryC = phiC * p.m_dry;
+        const double dmm = p.d0 * 1000.0;
+        const double dryRate = drying / (dmm * dmm);
+        const double exchange = moistureExchange * dryRate * std::exp(-k.dry_B / TmK);
+        // Exact relaxation toward equal dry-basis moisture. Positive flow is core to surface.
+        const double exchangedFraction = -std::expm1(-exchange * dt);
+        const double moved = (phiS * p.waterMass() - p.water_s) * exchangedFraction;
+        double waterS = p.water_s + moved, waterC = p.water_c - moved;
+        const double excess = std::max(0.0, waterS / dryS - k.X_eq);
+        double evapKg = 0;
+        if (excess > 0) {
+            const double waterActivity = excess / (excess + 0.02);  // effective bound-water activity
+            const double vaporSurface = waterActivity * saturationPressure(p.T_s);
+            const double drive = std::max(0.0, vaporSurface - vaporAir) / vaporSurface;
+            const double rate = dryRate * std::exp(-k.dry_B / toK(p.T_s)) * excess * excess * drive;
+            evapKg = std::min(excess * dryS, p.m_dry * rate * dt);
+        }
+        const double moisture = p.waterMass() / p.m_dry;
+        const double coreMoisture = p.water_c / dryC;
 
         // --- exotherm
         double kexo = k.exo_k0 * std::exp(-k.exo_EaR / TmK);
@@ -193,9 +229,9 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
                 c.count = n;
                 c.size_mm = static_cast<float>(sizeMm);
                 c.hardness = static_cast<float>(hardness);
-                c.moisture = static_cast<float>(p.X);
+                c.moisture = static_cast<float>(coreMoisture);
                 c.loudness = static_cast<float>(spec_.crack_loudness * std::pow(hardness, 1.5) *
-                                                clampd(std::sqrt(p.X / 0.06), 0.5, 1.4) * std::sqrt(sizeMm / 7.5));
+                                                clampd(std::sqrt(coreMoisture / 0.06), 0.5, 1.4) * std::sqrt(sizeMm / 7.5));
                 res.cracks.push_back(c);
             }
         }
@@ -209,7 +245,7 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
                 c.count = n;
                 c.size_mm = static_cast<float>(sizeMm);
                 c.hardness = static_cast<float>(hardness);
-                c.moisture = static_cast<float>(p.X);
+                c.moisture = static_cast<float>(coreMoisture);
                 c.loudness = static_cast<float>(spec_.crack_loudness * hardness * 0.5);
                 res.cracks.push_back(c);
             }
@@ -219,17 +255,21 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
         // --- heat balance (two nodes)
         double cpS = k.cp_dry_a + k.cp_dry_b * p.T_s;
         double cpC = k.cp_dry_a + k.cp_dry_b * p.T_c;
-        double Cs = phiS * p.m_dry * (cpS + p.X * kWaterCp);
-        double Cc = phiC * p.m_dry * (cpC + p.X * kWaterCp);
+        double Cs = dryS * cpS + waterS * kWaterCp;
+        double Cc = dryC * cpC + waterC * kWaterCp;
+        // Water entering a node brings sensible heat at the donor's temperature.
+        double mixS = std::max(0.0, moved) * kWaterCp * (p.T_c - p.T_s);
+        double mixC = std::max(0.0, -moved) * kWaterCp * (p.T_s - p.T_c);
         double G = 7.0 * k.k_bean * p.d * condF;  // W/K surface<->core
         double Qint = G * (p.T_s - p.T_c);
-        double Qsink = Qevap + Qcrack - Qexo;
-        double dTs = (p.q_in - Qint - phiS * Qsink) / Cs * dt;
-        double dTc = (Qint - phiC * Qsink) / Cc * dt;
+        double Qsink = Qcrack - Qexo;
+        double dTs = ((p.q_in - Qint - phiS * Qsink) * dt + mixS - k.latent_J_kg * evapKg) / Cs;
+        double dTc = ((Qint - phiC * Qsink) * dt + mixC) / Cc;
         p.T_s += dTs;
         p.T_c += dTc;
 
-        p.X += dX;
+        p.water_s = waterS - evapKg;
+        p.water_c = waterC;
         p.exo += dxi;
 
         // --- development integrals
@@ -247,7 +287,7 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
         p.d = p.d0 * (1.0 + k.expansion_dev * std::min(1.0, devMean / 300.0) + k.expansion_fc * p.fc_frac +
                       k.expansion_sc * p.sc_frac);
         p.oil = std::max(p.oil, std::max(smoothstep(0.15, 0.9, p.sc_frac) * 0.8, smoothstep(420, 700, p.dev_s)));
-        double dryProg = clamp01(1.0 - (p.X - 0.02) / std::max(1e-6, p.X0 - 0.02));
+        double dryProg = clamp01(1.0 - (p.waterMass() / p.m_dry - 0.02) / std::max(1e-6, p.X0 - 0.02));
         double chaffTarget = p.chaff0 * (1.0 - 0.45 * dryProg - 0.5 * p.fc_frac);
         double chaffRel = 0;
         if (p.chaff > chaffTarget) {
@@ -258,7 +298,7 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng) {
         // --- defects
         if (p.spot_T > k.scorch_T) p.scorch += dt * (p.spot_T - k.scorch_T) / (30.0 * 60.0);
         double grad = p.T_s - p.T_c;
-        if (p.X > 0.06 && grad > k.tipping_dT) p.tipping += dt * (grad - k.tipping_dT) / (10.0 * 60.0);
+        if (moisture > 0.06 && grad > k.tipping_dT) p.tipping += dt * (grad - k.tipping_dT) / (10.0 * 60.0);
 
         res.water_evap_kg += evapKg * p.count;
         res.organic_loss_kg += orgKg * p.count;
@@ -364,7 +404,7 @@ BeanSummary BeanBatch::summary() const {
         s.T_min = std::min(s.T_min, pm);
         s.T_max = std::max(s.T_max, pm);
         greenLeft += c * (p.m_dry0 * (1.0 + p.X0) + p.chaff0);
-        water += c * p.m_dry * p.X;
+        water += c * p.waterMass();
         dry += c * p.m_dry;
         chaff += c * p.chaff;
         double aw = agtronFromDev(p.dev_s);

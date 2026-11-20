@@ -1,0 +1,13 @@
+{
+  "roaster": "spouted_bed_pilot",
+  "bean": "kenya_pilot_blend",
+  "batch_g": 350,
+  "seed": 7,
+  "max_s": 1500,
+  "env": { "ambient_C": 20, "source_ohms": 0 },
+  "actions": [
+    { "at": 0, "set": { "heat": 70.255236467, "fan": 73.548387097 } },
+    { "at": 600, "charge": true },
+    { "roast_at": 278, "drop": true }
+  ]
+}

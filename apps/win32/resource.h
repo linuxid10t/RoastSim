@@ -14,6 +14,7 @@
 #define IDC_ENV_ALT 1007
 #define IDC_ENV_ALT_U 1008
 #define IDC_ENV_DEFAULTS 1009
+#define IDC_ENV_HUMIDITY 1010
 
 // Preheat dialog
 #define IDC_PRE_TARGET 1101

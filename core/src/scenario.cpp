@@ -67,9 +67,9 @@ bool runScenario(const json::Value& script, const Catalog& catalog, ScenarioResu
     sim.setSeed(static_cast<std::uint64_t>(script.get("seed", 1.0)));
     sim.setParcelCount(static_cast<int>(script.get("parcels", 200.0)));
     Environment env;
+    env.line_voltage = r->nominalLineVoltage();
     applyEnvironmentJson(script["env"], env);
-    sim.setEnvironment(env);
-    sim.load(*r, *b);
+    sim.load(*r, *b, env);
     // Scripts drive a working roaster: switch it on unless the script says otherwise
     // (a "power" action can switch it off mid-roast to model a power cut).
     if (script.getBool("power", true)) sim.setPower(true, "script");
