@@ -38,7 +38,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `units` | `value`: C or F | units reported to Artisan (Modbus/WS/TC4) |
 | `parcels` | `value` | bean parcels for the next charge (default 200) |
 | `history` | `since` (index), `max` | `samples` as `[t, t_roast, bt, et, ror_bt, ror_et, bean_true, heat, fan, drum]`, `next` |
-| `events` | `since` (seq) | `events`: `{seq, type, detail, origin, t, t_roast, bt}` |
+| `events` | `since` (seq) | `events`: `{seq, type, detail, origin, t, t_roast, bt, power}` |
 | `report` | | roast report: times, DTR, Agtron whole/ground/spread, weight & moisture loss, defects, notes |
 | `visual` | `max` | render state for 3D/2D views; `beans` as `[r, g, b, size_mm, oil, temp, count, exposure, cracked, scorch]` |
 | `server` | | listener status, connected clients, logger status, config |
@@ -47,6 +47,8 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `audio_mix` | `master`, `machine`, `cracks` (0–1) | **WebSocket only**: levels for this connection's sound stream |
 
 Event types: `CHARGE`, `TP`, `DRY`, `FCs`, `FCe`, `SCs`, `SCe`, `DROP`, `COOL`, `ALARM` (`detail` = alarm name), `NOTE` (`detail` = free text; the simulator writes `power on` / `power off` and `cold reset`, the first event after a cold reset or roaster load, which front ends use to start a new graph).
+
+The `power` field in both the event log and WebSocket event stream gives the machine's power state when the event was recorded.
 
 Alarm names (and C API bit numbers): `thermostat_open` (0), `fuse_blown` (1), `beans_ejecting` (2), `bed_stalled` (3), `scorching` (4), `smoke_heavy` (5), `fire_risk` (6), `overheat` (7), `centrifuging` (8), `probe_fault` (9).
 

@@ -62,7 +62,7 @@ On Linux, port 502 needs privileges. Use `--modbus-port 5020` and set the same p
 .\build\roastsim_tests.exe data
 ```
 
-The 23 tests cover physics envelopes for every preset, the density effect, crack sounds per bean, the sound engine, determinism, Modbus framing and registers, the Artisan WebSocket dialect and push messages, HTTP, TC4 commands and the C API.
+The suite covers physics envelopes for every preset, the density effect, crack sounds per bean, the sound engine, determinism, Modbus framing and registers, the Artisan WebSocket dialect and push messages, HTTP, TC4 commands and the C API.
 
 ## Project layout
 

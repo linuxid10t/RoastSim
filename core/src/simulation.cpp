@@ -90,6 +90,7 @@ void Simulation::addEvent(const std::string& type, const std::string& origin, co
     e.origin = origin;
     e.t_session = t_;
     e.t_roast = chargeT_ >= 0 ? t_ - chargeT_ : -1;
+    e.powered = powered_;
     int bi = probeIndex("BT");
     e.bt = bi >= 0 ? probes_[static_cast<std::size_t>(bi)].read() : 0;
     events_.push_back(e);
@@ -136,6 +137,9 @@ bool Simulation::charge(double batch_g, const std::string& origin, std::string* 
     dropT_ = -1;
     phase_ = RoastPhase::Roasting;
     for (bool& m : marked_) m = false;
+    prevRateT_ = -1;
+    rateMeanT_ = rateCoreT_ = 0;
+    etaDry_ = etaFc_ = -1;
     tpMin_ = 1e9;
     tpMinT_ = -1;
     popsFc_ = popsSc_ = 0;
@@ -147,6 +151,7 @@ bool Simulation::charge(double batch_g, const std::string& origin, std::string* 
     }
     for (auto& h : history_) h.t_roast = static_cast<float>(h.t - t_);
     addEvent("CHARGE", origin);
+    chargeSeq_ = seq_;
     return true;
 }
 
@@ -509,12 +514,8 @@ Projection projection(double rate, double T, double et) {
 }  // namespace
 
 void Simulation::estimateMilestones(double meanT, double coreT) {
+    if (phase_ != RoastPhase::Roasting) return;
     etaDry_ = etaFc_ = -1;
-    if (phase_ != RoastPhase::Roasting || beanLoc_ != BeanLocation::Machine) {
-        prevRateT_ = -1;
-        rateMeanT_ = rateCoreT_ = 0;
-        return;
-    }
     // Smoothed heating rates (C/s) over ~20 s; bean temperatures are
     // noise-free, so this is stable.
     if (prevRateT_ >= 0 && t_ > prevRateT_) {
@@ -620,8 +621,10 @@ Snapshot Simulation::snapshot() const {
     s.powered = powered_;
     s.env = env_;
     s.last_event_seq = seq_;
-    s.eta_dry_s = etaDry_;
-    s.eta_fc_s = etaFc_;
+    if (phase_ == RoastPhase::Roasting) {
+        if (!marked_[MDry]) s.eta_dry_s = etaDry_;
+        if (!marked_[MFcs]) s.eta_fc_s = etaFc_;
+    }
     return s;
 }
 
@@ -688,7 +691,7 @@ RoastReport Simulation::report() const {
     if (chargeT_ < 0 || beanLoc_ == BeanLocation::None) return r;
     r.valid = true;
     r.roaster = roaster_.name;
-    r.bean = bean_.name;
+    r.bean = beans_.spec().name;
     BeanSummary s = beans_.summary();
     r.batch_g = batchG_;
     r.out_g = s.mass_g;
@@ -703,7 +706,7 @@ RoastReport Simulation::report() const {
     r.ejected_pct = initialBeans_ > 0 ? 100.0 * (1.0 - s.beans / initialBeans_) : 0;
 
     for (const auto& e : events_) {
-        if (e.t_session < chargeT_ - 1e-6) continue;
+        if (e.seq <= chargeSeq_) continue;
         if (e.type == "TP" && r.tp_s < 0) { r.tp_s = e.t_roast; r.tp_bt = e.bt; }
         else if (e.type == "DRY" && r.dry_s < 0) r.dry_s = e.t_roast;
         else if (e.type == "FCs" && r.fcs_s < 0) { r.fcs_s = e.t_roast; r.fcs_bt = e.bt; }

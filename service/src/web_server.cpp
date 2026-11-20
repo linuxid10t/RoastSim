@@ -410,6 +410,7 @@ void NetServer::Impl::periodic(Conn& c, double now) {
                 v["t"] = e.t_session;
                 v["t_roast"] = e.t_roast;
                 v["bt"] = e.bt;
+                v["power"] = e.powered;
                 c.out += wsFrame(v.dump());
             }
             if (c.artisan && e.origin != "artisan-ws") {

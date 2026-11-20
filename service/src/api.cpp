@@ -61,6 +61,7 @@ json::Value eventJson(const SimEvent& e) {
     v["t"] = r1(e.t_session, 2);
     v["t_roast"] = r1(e.t_roast, 2);
     v["bt"] = r1(e.bt);
+    v["power"] = e.powered;
     return v;
 }
 

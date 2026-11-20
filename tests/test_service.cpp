@@ -131,7 +131,11 @@ std::vector<std::string> wsFrames(std::string& buf) {
 platform::socket_t wsConnect(int port, const std::string& path) {
     std::string err;
     platform::socket_t s = platform::connectTcp("127.0.0.1", port, &err);
-    if (s == platform::kInvalidSocket) return s;
+    CHECK(s != platform::kInvalidSocket);
+    if (s == platform::kInvalidSocket) {
+        std::printf("    %s\n", err.c_str());
+        return s;
+    }
     sendAll(s, "GET /" + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
                "Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
@@ -175,7 +179,10 @@ TEST(modbus_read_write) {
     std::string err;
     platform::socket_t s = platform::connectTcp("127.0.0.1", basePort(), &err);
     CHECK(s != platform::kInvalidSocket);
-    if (s == platform::kInvalidSocket) return;
+    if (s == platform::kInvalidSocket) {
+        std::printf("    %s (%s)\n", err.c_str(), host->serverInfo()["net"].get("modbus", "off").c_str());
+        return;
+    }
     // FC3 read 0..23 (what Artisan's optimizer would batch)
     sendAll(s, mbap(1, 1, pdu({3, 0, 0, 0, 24})));
     std::string r = recvAtLeast(s, 9 + 48);
@@ -269,6 +276,22 @@ TEST(ui_websocket_and_http) {
     sendAll(s, wsMasked(R"({"cmd":"nonsense","req":3})"));
     json::Value bad = wsWait(s, buf, [](const json::Value& v) { return v.get("req", 0.0) == 3; });
     CHECK(!bad.getBool("ok", true));
+
+    // A paused machine can reset and switch power without advancing its clock.
+    for (const char* cmd : {R"({"cmd":"pause","value":true})", R"({"cmd":"power","value":true})", R"({"cmd":"reset"})",
+                            R"({"cmd":"power","value":false})", R"({"cmd":"charge"})"})
+        CHECK(host->command(json::Value::parse(cmd), "test").getBool("ok", false));
+    json::Value reset;
+    json::Value charge = wsWait(s, buf, [&](const json::Value& v) {
+        if (v.get("type", "") != "event") return false;
+        if (v.get("detail", "") == "cold reset") reset = v;
+        return v.get("event", "") == "CHARGE";
+    });
+    CHECK(reset.getBool("power", false));
+    CHECK(!charge.getBool("power", true));
+    CHECK(reset.get("t", -1.0) == charge.get("t", -2.0));
+    auto events = host->command(json::Value::parse(R"({"cmd":"events"})"), "test");
+    CHECK(!events["events"].items().empty() && !events["events"].items().back().getBool("power", true));
     platform::closeSocket(s);
 
     // Plain HTTP API

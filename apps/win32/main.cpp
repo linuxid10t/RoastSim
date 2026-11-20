@@ -120,6 +120,7 @@ struct EventMark {
     std::string type, detail;
     double t_roast, t;
     double bt;  // C at the event, -1 if the probe was open
+    bool powered;
 };
 
 // Roast phases shown in the progress panel and as a band on the graph.
@@ -455,17 +456,6 @@ void setStatus(int part, const std::wstring& text) {
 }
 
 // ---------------------------------------------------------------- roaster setup
-// After a cold reset or roaster load (both clear the simulator's history):
-// drop the graph; the next refresh starts a new one if the machine is on.
-void reloadHistory() {
-    g.hist.clear();
-    g.histNext = 0;
-    g.events.clear();
-    g.offRoast.clear();
-    g.eventSeq = 0;
-    g.graphStart = g.graphEnd = -1;
-}
-
 // Begins a new graph at session time t (-1 = none until the machine is on).
 void startGraph(double t) {
     g.graphStart = t;
@@ -520,7 +510,6 @@ void applyRoasterDef() {
     std::string bean = s["bean"].get("id", "");
     for (size_t i = 0; i < g.beanIds.size(); ++i)
         if (g.beanIds[i] == bean) SendMessageW(g.beanCombo, CB_SETCURSEL, i, 0);
-    reloadHistory();
     g.beanX.clear();
     invalidateRight();
 }
@@ -787,51 +776,50 @@ void refresh() {
     g.histNext = next;
     if (g.hist.size() > 20000) g.hist.erase(g.hist.begin(), g.hist.begin() + 5000);
 
-    if (g.st.event_seq != g.eventSeq) {
+    if (g.st.event_seq > g.eventSeq) {
         Value c = Value::object();
         c["cmd"] = "events";
         c["since"] = static_cast<double>(g.eventSeq);
         Value r = command(c);
         for (const auto& e : r["events"].items()) {
+            g.eventSeq = static_cast<uint64_t>(e.get("seq", 0.0));
             std::string type = e.get("type", "");
             double t = e.get("t", 0.0);
+            bool powered = e.getBool("power", g.st.powered);
             // A cold reset or roaster load (from any front end) wipes the
             // simulator's history: start a new graph if the machine is on.
             std::string detail = e.get("detail", "");
-            if (type == "NOTE" && detail == "cold reset") {
-                if (g.graphStart < 0 || t > g.graphStart) {
-                    g.offRoast.clear();
-                    startGraph(g.st.powered ? t : -1);
-                }
+            if (type == "NOTE" && detail == "cold reset" && e.get("origin", "") == "sim") {
+                g.offRoast.clear();
+                startGraph(powered ? t : -1);
                 continue;
             }
             // Switching on starts a new graph at the moment of the switch,
             // unless a roast is in progress on the current one (a mid-roast
             // power cut keeps the graph going).
-            if (type == "NOTE" && detail == "power on" &&
-                (g.graphStart < 0 || g.graphEnd >= 0 || eventTime("CHARGE") < 0))
+            if (type == "NOTE" && detail == "power on" && powered &&
+                (g.graphStart < 0 || g.graphEnd >= 0 || !g.offRoast.empty() || eventTime("CHARGE") < 0))
                 startGraph(t);
-            // No graph recording (machine off): beans charged into the cold
-            // machine are held back and become the roast of the graph that
-            // starts at power-on.
-            if (g.graphStart < 0 || g.graphEnd >= 0) {
-                if (type == "CHARGE") g.offRoast.clear();
-                if (type == "CHARGE" || !g.offRoast.empty())
-                    g.offRoast.push_back({type, detail, e.get("t_roast", -1.0), t, e.get("bt", -1.0)});
-                if (type == "COOL") g.offRoast.clear();  // finished without ever being switched on
+            EventMark mark{type, detail, e.get("t_roast", -1.0), t, e.get("bt", -1.0), powered};
+            // Hold a roast charged with the power off for the next power-on.
+            if (type == "CHARGE" && (!powered || g.graphStart < 0)) {
+                g.offRoast = {mark};
                 continue;
             }
-            // Only events of the current graph (a refetch can replay older ones).
-            if (t < g.graphStart) continue;
+            if (!g.offRoast.empty()) {
+                if (type == "COOL") g.offRoast.clear();
+                else g.offRoast.push_back(mark);
+                continue;
+            }
+            if (g.graphStart < 0 || g.graphEnd >= 0) continue;
             if (type == "CHARGE") g.events.clear();
-            g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), t, e.get("bt", -1.0)});
+            g.events.push_back(mark);
             if (type == "COOL") {
                 // The roast is over: freeze the graph here, then power off and report.
                 g.graphEnd = t;
                 PostMessageW(g.wnd, WM_APP_ROAST_DONE, 0, 0);
             }
         }
-        g.eventSeq = g.st.event_seq;
     }
     // Machine on but no graph (switched on before the last cold reset, or
     // before this window opened): the graph starts with the oldest sample.
@@ -1005,7 +993,7 @@ void paintGraph(HDC dc, RECT area) {
     std::fill(rowEnd, rowEnd + kRows, INT_MIN);
     HBRUSH labelBg = CreateSolidBrush(RGB(250, 249, 246));
     for (const auto& e : g.events) {
-        if (e.type == "ALARM" || e.type == "NOTE") continue;
+        if (e.type == "ALARM" || e.type == "NOTE" || (e.type == "CHARGE" && !e.powered)) continue;
         double x = e.t - origin;
         if (!inGraph(e.t) || x < x0 || x > x1) continue;
         int px = X(x);
@@ -1444,7 +1432,7 @@ void onCommand(int id, int code) {
             if (MessageBoxW(g.wnd, L"Cool the machine to room temperature and discard any beans?", L"Cold reset",
                             MB_YESNO | MB_ICONQUESTION) == IDYES) {
                 cmd1("reset");
-                reloadHistory();
+                refresh();
             }
             break;
         case IDM_REPAIR: showError(cmd1("repair")); break;

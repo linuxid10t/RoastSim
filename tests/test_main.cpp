@@ -255,6 +255,41 @@ TEST(power_switch_gates_the_machine) {
     CHECK(!sim.powered());
 }
 
+TEST(report_tracks_the_charged_batch) {
+    Simulation sim;
+    const auto& colombia = *catalog().bean("colombia_washed");
+    const auto& kenya = *catalog().bean("kenya_washed");
+    sim.load(*catalog().roaster("popper_modded"), colombia);
+    CHECK(sim.charge(100, "test"));
+    sim.setBean(kenya);
+    CHECK(sim.snapshot().bean_id == kenya.id);
+    CHECK(sim.report().bean == colombia.name);
+    sim.markEvent("DRY", "test");
+    CHECK(sim.drop("test"));
+    CHECK(sim.charge(100, "test"));  // both charges share a timestamp when paused
+    CHECK(sim.report().bean == kenya.name);
+    CHECK(sim.report().dry_s < 0);
+    CHECK(sim.report().drop_s < 0);
+}
+
+TEST(milestone_estimates_follow_roast_changes) {
+    Simulation sim;
+    sim.load(*catalog().roaster("popper_modded"), *catalog().bean("colombia_washed"));
+    CHECK(sim.charge(100, "test"));
+    sim.step(30);
+    CHECK(sim.snapshot().eta_dry_s == -2);
+    CHECK(sim.snapshot().eta_fc_s == -1);
+    sim.markEvent("DRY", "test");
+    CHECK(sim.snapshot().eta_dry_s == -1);
+    sim.step(1);
+    CHECK(sim.snapshot().eta_fc_s == -2);
+    CHECK(sim.drop("test"));
+    CHECK(sim.snapshot().eta_fc_s == -1);
+    CHECK(sim.charge(100, "test"));
+    CHECK(sim.snapshot().eta_dry_s == -1);
+    CHECK(sim.snapshot().eta_fc_s == -1);
+}
+
 TEST(probe_open_fault_reads_minus_one) {
     ScenarioResult r = run(R"({"roaster":"popper_modded","seed":1,"max_s":60,
         "actions":[{"at":0,"set":{"heat":50,"fan":80}},{"at":10,"fault":{"probe":"BT","type":"open"}}]})");

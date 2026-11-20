@@ -26,6 +26,7 @@ struct SimEvent {
     double t_session = 0;
     double t_roast = 0;
     double bt = 0;
+    bool powered = false;
 };
 
 // One audible crack (first or second) from one bean, for sound and 3D effects.
@@ -191,7 +192,7 @@ private:
 
     // Event bookkeeping
     std::vector<SimEvent> events_;
-    std::uint64_t seq_ = 0;
+    std::uint64_t seq_ = 0, chargeSeq_ = 0;
     bool marked_[16] = {};
     double tpMin_ = 1e9, tpMinT_ = -1;
     std::uint32_t lastAlarms_ = 0;  // latched alarm bits

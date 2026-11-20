@@ -12,9 +12,9 @@ const SPEEDS = [0, 1, 2, 5, 10, 30, 60];
 const VOLUMES = [25, 50, 75, 100];
 const ENV_DEFAULTS = { ambient_C: 22, line_voltage: 120, source_ohms: 0.25, gas_pressure: 1, altitude_m: 0 };
 
-let ws = null, reqId = 0;
+let ws = null, reqId = 0, serverPollTimer;
 const pending = new Map();
-let state = null, def = null;
+let state = null, def = null, defLoading = false;
 let history = [];          // rows: arrays in COLS order, kept since power-on
 let events = [];           // events of the current graph's roast
 let offRoast = [];         // roast charged while the machine is off (no graph yet)
@@ -33,6 +33,7 @@ let graph = { start: -1, end: -1 };
 // Events up to this sequence number were replayed on connect: they rebuild the
 // graph but must not pop up a report or switch the machine off again.
 let liveFrom = Infinity;
+let eventSeq = 0;
 
 // ---------------------------------------------------------------- units
 // The API always speaks C / grams / metres; this shared setting (also used for
@@ -65,21 +66,32 @@ function applyUnits(s) {
 // ---------------------------------------------------------------- transport
 function connect() {
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
-  ws = new WebSocket(url);
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = async () => {
+  const socket = new WebSocket(url);
+  ws = socket;
+  socket.binaryType = 'arraybuffer';
+  socket.onopen = async () => {
     history = []; events = []; offRoast = []; graph = { start: -1, end: -1 };
+    eventSeq = 0;
     renderEvents();
-    await loadLists();
-    await refreshDef();
-    const s0 = await send({ cmd: 'state' });
+    if (!await loadLists()) return;
+    const s0 = await refreshDef();
+    if (!s0 || ws !== socket) return;
     liveFrom = s0.event_seq || 0;
     send({ cmd: 'subscribe', history_from: 0, event_seq: 0 });
     if (snd) send({ cmd: 'audio', value: true, rate: snd.rate });  // resume sound after a reconnect
-    pollServer();
+    pollServer(socket);
   };
-  ws.onclose = () => { state = null; $('sbState').textContent = 'offline'; setTimeout(connect, 1500); };
-  ws.onmessage = (m) => {
+  socket.onclose = () => {
+    ws = null;
+    state = null;
+    serverInfo = null;
+    clearTimeout(serverPollTimer);
+    for (const resolve of pending.values()) resolve({ ok: false, error: 'connection closed' });
+    pending.clear();
+    $('sbState').textContent = 'offline';
+    setTimeout(connect, 1500);
+  };
+  socket.onmessage = (m) => {
     if (m.data instanceof ArrayBuffer) { playPcm(m.data); return; }
     let msg;
     try { msg = JSON.parse(m.data); } catch { return; }
@@ -104,22 +116,29 @@ async function act(cmd) {
   return r;
 }
 
-async function pollServer() {
-  if (!ws || ws.readyState !== 1) return;
-  serverInfo = await send({ cmd: 'server' });
-  setTimeout(pollServer, 5000);
+async function pollServer(socket) {
+  if (ws !== socket || socket.readyState !== 1) return;
+  const info = await send({ cmd: 'server' });
+  if (ws !== socket) return;
+  serverInfo = info;
+  serverPollTimer = setTimeout(() => pollServer(socket), 5000);
 }
 
 // ---------------------------------------------------------------- setup
 async function loadLists() {
   const l = await send({ cmd: 'list' });
+  if (!l.ok) return false;
   const fill = (sel, arr) => { sel.innerHTML = ''; for (const x of arr) sel.add(new Option(x.name, x.id)); };
   fill($('roaster'), l.roasters || []);
   fill($('bean'), l.beans || []);
+  return true;
 }
 
 async function refreshDef() {
+  defLoading = true;
   const s = await send({ cmd: 'state', full: true });
+  defLoading = false;
+  if (!s.roaster_def) return;
   def = s.roaster_def;
   $('roaster').value = s.roaster.id;
   $('bean').value = s.bean.id;
@@ -130,6 +149,7 @@ async function refreshDef() {
   if (s.units) units = s.units;
   unitKey = JSON.stringify(units);
   applyUnits(s);
+  return s;
 }
 
 function buildSliders() {
@@ -175,26 +195,30 @@ function startGraph(t) {
 const eventTime = (type) => { const e = events.find(x => x.event === type); return e ? e.t_roast : -1; };
 
 function onEvent(e) {
+  eventSeq = e.seq;
   const type = e.event;
   // A cold reset or roaster load (from any front end) wipes the simulator's
   // history: start a new graph if the machine is on.
-  if (type === 'NOTE' && e.detail === 'cold reset') {
-    if (graph.start < 0 || e.t > graph.start) { offRoast = []; startGraph(state && state.power ? e.t : -1); }
+  if (type === 'NOTE' && e.detail === 'cold reset' && e.origin === 'sim') {
+    offRoast = [];
+    startGraph((e.power ?? state?.power) ? e.t : -1);
     return;
   }
   // Switching on starts a new graph, unless a roast is in progress on the
   // current one (a mid-roast power cut keeps the graph going).
-  if (type === 'NOTE' && e.detail === 'power on' &&
-      (graph.start < 0 || graph.end >= 0 || eventTime('CHARGE') < 0)) startGraph(e.t);
-  // No graph recording (machine off): beans charged into the cold machine are
-  // held back and become the roast of the graph that starts at power-on.
-  if (graph.start < 0 || graph.end >= 0) {
-    if (type === 'CHARGE') offRoast = [];
-    if (type === 'CHARGE' || offRoast.length) offRoast.push(e);
-    if (type === 'COOL') offRoast = [];  // finished without ever being switched on
+  if (type === 'NOTE' && e.detail === 'power on' && e.power !== false &&
+      (graph.start < 0 || graph.end >= 0 || offRoast.length || eventTime('CHARGE') < 0)) startGraph(e.t);
+  // Hold a roast charged with the power off for the next power-on.
+  if (type === 'CHARGE' && (e.power === false || graph.start < 0)) {
+    offRoast = [e];
     return;
   }
-  if (e.t < graph.start - 0.5) return;  // replayed from before this graph
+  if (offRoast.length) {
+    if (type === 'COOL') offRoast = [];
+    else offRoast.push(e);
+    return;
+  }
+  if (graph.start < 0 || graph.end >= 0) return;
   if (type === 'CHARGE') events = [];
   events.push(e);
   renderEvents();
@@ -278,7 +302,9 @@ function onState(s) {
   state = s;
   // Machine already on with no power-on in the event log (e.g. switched on
   // before the last cold reset): the graph starts with the oldest sample.
-  if (s.power && graph.start < 0) startGraph(history.length ? history[0][0] : s.t);
+  if (s.power && graph.start < 0 && eventSeq >= s.event_seq) startGraph(history.length ? history[0][0] : s.t);
+  if (def?.id !== s.roaster.id && !defLoading) refreshDef();
+  $('bean').value = s.bean.id;
   if (s.units && JSON.stringify(s.units) !== unitKey) {  // changed here or in another front end
     units = s.units;
     unitKey = JSON.stringify(units);
@@ -494,7 +520,7 @@ function drawChart() {
   // off the axes. Labels go in the first row where they don't overlap.
   const rowEnd = [-1e9, -1e9, -1e9, -1e9];
   for (const e of events) {
-    if (['ALARM', 'NOTE'].includes(e.event)) continue;
+    if (['ALARM', 'NOTE'].includes(e.event) || (e.event === 'CHARGE' && e.power === false)) continue;
     const x = e.t - origin;
     if (!inGraph(e.t) || x < x0 || x > x1) continue;
     const px = X(x);
