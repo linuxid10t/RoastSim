@@ -31,6 +31,10 @@ struct MachineTelemetry {
     double stir_rpm = 0;
     double angle_rad = 0;       // drum or stir-arm angle (for the 3D view)
     double bt_immersion = 0;    // how buried the BT probe is (0..1)
+    // Temperature the beans are being driven towards: every heat source
+    // (hot air, drum wall, pan, radiation) weighted by how strongly it couples
+    // to the beans. Used to project time to DRY / first crack; -1 = no beans.
+    double bean_env_C = -1;
     std::uint32_t alarms = 0;
     const char* bed_state = "empty";
 };

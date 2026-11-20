@@ -8,6 +8,12 @@ namespace {
 
 enum Mark { MCharge, MTp, MDry, MFcs, MFce, MScs, MSce, MDrop, MCool, MCount };
 
+// Auto-detection thresholds, shared with the time-to-milestone estimates.
+constexpr double kDryMeanC = 150.0;    // DRY: bean mass mean temperature
+constexpr double kFcStartFrac = 0.02;  // FCs: share of beans that have cracked
+
+double normalCdf(double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); }
+
 int markIndex(const std::string& t) {
     static const char* names[] = {"CHARGE", "TP", "DRY", "FCs", "FCe", "SCs", "SCe", "DROP", "COOL"};
     for (int i = 0; i < MCount; ++i)
@@ -408,18 +414,20 @@ void Simulation::detectEvents() {
     // Alarms (machine + simulation level), edge-triggered into the event log.
     std::uint32_t alarms = machine_->telemetry().alarms;
     if (!powered_) alarms &= ~AlarmBedStalled;  // a switched-off machine is not "stalled"
-    double scorchingFrac = 0, meanT = 0, fc = 0, sc = 0, n = 0;
+    double scorchingFrac = 0, meanT = 0, coreT = 0, fc = 0, sc = 0, n = 0;
     if (beanLoc_ != BeanLocation::None) {
         const Kinetics& k = beans_.kinetics();
         for (const auto& p : beans_.parcels()) {
             n += p.count;
             meanT += p.count * p.meanT(k);
+            coreT += p.count * p.T_c;
             fc += p.count * p.fc_frac;
             sc += p.count * p.sc_frac;
             if (p.spot_T > k.scorch_T) scorchingFrac += p.count;
         }
         if (n > 0) {
             meanT /= n;
+            coreT /= n;
             fc /= n;
             sc /= n;
             scorchingFrac /= n;
@@ -461,13 +469,115 @@ void Simulation::detectEvents() {
                 events_.back().bt = tpMin_;
             }
         }
-        if (!marked_[MDry] && meanT >= 150.0) addEvent("DRY", "sim");
-        if (!marked_[MFcs] && fc >= 0.02) addEvent("FCs", "sim");
+        if (!marked_[MDry] && meanT >= kDryMeanC) addEvent("DRY", "sim");
+        if (!marked_[MFcs] && fc >= kFcStartFrac) addEvent("FCs", "sim");
         if (marked_[MFcs] && !marked_[MFce] && fc >= 0.90) addEvent("FCe", "sim");
         if (!marked_[MScs] && sc >= 0.02) addEvent("SCs", "sim");
         if (marked_[MScs] && !marked_[MSce] && sc >= 0.85) addEvent("SCe", "sim");
-    } else if (phase_ == RoastPhase::Cooling) {
+    }
+    estimateMilestones(meanT, coreT);
+    if (phase_ == RoastPhase::Cooling) {
         if (meanT < 40.0 || t_ - dropT_ > 900) coolEnd("sim");
+    }
+}
+
+// Projects the beans forward to estimate how long until auto-detection would
+// call DRY and first crack. Beans heat towards their surroundings (Newton's
+// law), so the rate of rise keeps falling as they near them: we project along
+// that curve, levelling off at the temperature the machine is driving the
+// beans towards (hot air, drum wall, pan and radiation weighted by how
+// strongly each couples to the beans; ET if the machine can't say), with the
+// time constant that matches the current heating rate (tau = gap / rate).
+// A straight line would read far too short early in the roast. When the
+// beans are already at or above that temperature (exotherm) the projection
+// falls back to linear. Called twice a second.
+namespace {
+struct Projection {
+    double rate = 0, gap = -1;  // gap = target - T; < 0: linear
+    double ahead(double dt) const {
+        if (gap <= 0) return rate * dt;
+        double tau = gap / rate;
+        return gap * (1.0 - std::exp(-dt / tau));
+    }
+};
+Projection projection(double rate, double T, double et) {
+    Projection p;
+    p.rate = rate;
+    if (et > T + 1.0 && rate > 0) p.gap = et - T;
+    return p;
+}
+}  // namespace
+
+void Simulation::estimateMilestones(double meanT, double coreT) {
+    etaDry_ = etaFc_ = -1;
+    if (phase_ != RoastPhase::Roasting || beanLoc_ != BeanLocation::Machine) {
+        prevRateT_ = -1;
+        rateMeanT_ = rateCoreT_ = 0;
+        return;
+    }
+    // Smoothed heating rates (C/s) over ~20 s; bean temperatures are
+    // noise-free, so this is stable.
+    if (prevRateT_ >= 0 && t_ > prevRateT_) {
+        double dt = t_ - prevRateT_, a = std::min(1.0, dt / 20.0);
+        rateMeanT_ += ((meanT - prevMeanT_) / dt - rateMeanT_) * a;
+        rateCoreT_ += ((coreT - prevCoreT_) / dt - rateCoreT_) * a;
+    }
+    // What the beans are heading for: the machine's own figure, else ET
+    // averaged over the last 10 s (the probe is noisy; -1 = unavailable).
+    double et = machine_ ? machine_->telemetry().bean_env_C : -1;
+    if (et < 0) {
+        double etSum = 0;
+        int etN = 0;
+        for (const auto& s : etBuf_)
+            if (s.first >= t_ - 10.0) { etSum += s.second; ++etN; }
+        if (etN > 0) et = etSum / etN;
+    }
+    prevMeanT_ = meanT;
+    prevCoreT_ = coreT;
+    prevRateT_ = t_;
+    if (t_ - chargeT_ < 20) return;  // rates not settled yet (and beans still cooling the machine)
+
+    // From here on a pending milestone gets a time, or kStalled if the beans
+    // won't get there at the current heat (within an hour, or barely heating).
+    constexpr double kStalled = -2;
+    constexpr double kMinRate = 0.5 / 60.0;  // below 0.5 C/min there is nothing useful to project
+    constexpr double kHorizon = 3600.0;
+    auto solve = [&](auto reached) {
+        if (reached(0.0)) return 0.0;
+        if (!reached(kHorizon)) return kStalled;
+        double lo = 0, hi = kHorizon;
+        for (int i = 0; i < 24; ++i) {
+            double mid = 0.5 * (lo + hi);
+            (reached(mid) ? hi : lo) = mid;
+        }
+        return hi;
+    };
+    if (!marked_[MDry]) {
+        Projection pr = projection(rateMeanT_, meanT, et);
+        etaDry_ = meanT < kDryMeanC && rateMeanT_ <= kMinRate
+                      ? kStalled
+                      : solve([&](double dt) { return meanT + pr.ahead(dt) >= kDryMeanC; });
+    }
+    // First crack only once drying is over: until then evaporation keeps
+    // slowing the beans in a way no projection from the current rate can
+    // see, and the estimate reads many minutes short.
+    if (!marked_[MDry] || marked_[MFcs]) return;
+    if (rateCoreT_ <= kMinRate) etaFc_ = kStalled;
+    else {
+        // Share of beans cracked once every core has warmed as projected for
+        // `ahead` seconds, with each parcel's own crack threshold (bean.cpp).
+        const Kinetics& k = beans_.kinetics();
+        Projection pr = projection(rateCoreT_, coreT, et);
+        auto cracked = [&](double ahead) {
+            double rise = pr.ahead(ahead), f = 0, n = 0;
+            for (const auto& p : beans_.parcels()) {
+                n += p.count;
+                double proj = normalCdf((p.T_c + rise - p.fc_thr) / k.crack_sigma);
+                f += p.count * std::max(p.fc_frac, proj);
+            }
+            return n > 0 ? f / n : 0.0;
+        };
+        etaFc_ = solve([&](double dt) { return cracked(dt) >= kFcStartFrac; });
     }
 }
 
@@ -510,6 +620,8 @@ Snapshot Simulation::snapshot() const {
     s.powered = powered_;
     s.env = env_;
     s.last_event_seq = seq_;
+    s.eta_dry_s = etaDry_;
+    s.eta_fc_s = etaFc_;
     return s;
 }
 

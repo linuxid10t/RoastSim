@@ -1107,13 +1107,25 @@ void paintReadouts(HDC dc, RECT area) {
     const std::wstring tu = TU();
     struct Item { std::wstring caption, value; COLORREF color; };
     auto probe = [](double c) { return c == -1.0 ? std::wstring(L"open") : fmt(L"%.1f", T(c)); };
+    // Estimated time to DRY / first crack (the simulator's projection at the
+    // current heat), counting down; "--:--" when not applicable, "stall" when
+    // the beans won't get there at this heat.
+    auto eta = [](double s) {
+        return s >= 0 ? mmss(std::ceil(s)) : s <= -1.5 ? std::wstring(L"stall") : std::wstring(L"--:--");
+    };
+    auto etaColor = [](double s, COLORREF c) {
+        return s >= 0 ? c : s <= -1.5 ? RGB(184, 67, 47) : RGB(160, 152, 144);
+    };
     const Item items[] = {
         {L"BT " + tu, probe(g.st.bt), RGB(70, 112, 200)},
         {L"ET " + tu, probe(g.st.et), RGB(200, 64, 42)},
         {L"RoR " + tu + L"/min", g.st.t_roast > 0 ? fmt(L"%.1f", R(g.st.ror_bt)) : L"--", RGB(224, 150, 42)},
+        {L"Est. to dry", eta(g.st.eta_dry_s), etaColor(g.st.eta_dry_s, kPhaseColors[0])},
+        {L"Est. to first crack", eta(g.st.eta_fc_s), etaColor(g.st.eta_fc_s, kPhaseColors[1])},
     };
     int x = area.left + S(16);
     for (const auto& it : items) {
+        if (&it == &items[3]) x += S(20);  // a little gap between readings and estimates
         drawText(dc, g.small, RGB(122, 111, 102), x, area.top + S(8), it.caption);
         drawText(dc, g.big, it.color, x, area.top + S(22), it.value);
         // Room for the widest value this column will show, so nothing shifts.

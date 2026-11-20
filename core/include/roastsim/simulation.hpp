@@ -77,6 +77,10 @@ struct Snapshot {
     bool powered = false;
     Environment env;
     std::uint64_t last_event_seq = 0;
+    // Projected roast seconds until DRY / first crack at the current heat;
+    // -1 when not applicable (not roasting, first 20 s, already reached),
+    // -2 when still ahead but the beans won't get there at this heat.
+    double eta_dry_s = -1, eta_fc_s = -1;
 };
 
 struct RoastReport {
@@ -204,6 +208,12 @@ private:
     std::deque<std::pair<double, double>> btBuf_, etBuf_;
     double rorBt_ = 0, rorEt_ = 0;
     double nextRorSample_ = 0, nextHistory_ = 0;
+
+    // Estimated time to DRY / first crack (see estimateMilestones()).
+    double prevMeanT_ = 0, prevCoreT_ = 0, prevRateT_ = -1;  // last sample, -1 = none
+    double rateMeanT_ = 0, rateCoreT_ = 0;                    // smoothed C/s
+    double etaDry_ = -1, etaFc_ = -1;
+    void estimateMilestones(double meanT, double coreT);
 
     std::deque<HistorySample> history_;
     std::uint64_t historyBase_ = 0;

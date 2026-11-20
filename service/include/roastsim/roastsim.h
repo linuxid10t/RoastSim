@@ -93,6 +93,8 @@ typedef struct rs_state {
     double scorch_frac, tipping_frac, oil;
     double ambient_c, line_voltage, altitude_m, humidity_rh;
     int powered;                        /* master power switch (0 = off, the default) */
+    /* --- added in API 1.2 --- */
+    double eta_dry_s, eta_fc_s;         /* projected roast seconds to DRY / first crack; -1 = n/a, -2 = stalling (not reached at this heat) */
 } rs_state;
 
 typedef struct rs_sample {

@@ -124,6 +124,9 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
             p.q_in = hA * (T_airEff_ - p.T_s);
             p.spot_T = p.T_s + std::min(1.0, 0.3 * e) * (T_airEff_ - p.T_s);
         }
+        // Beans only cool the air while they are colder than it: they head
+        // for the inlet air temperature.
+        tel_.bean_env_C = T_in_;
 
         if (a < 0.7) {
             alarms |= AlarmBedStalled;
@@ -145,6 +148,7 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
         tel_.fill = 0;
         tel_.bt_immersion = 0;
         tel_.bed_state = "empty";
+        tel_.bean_env_C = -1;
     }
 
     // ---- chamber wall

@@ -288,6 +288,14 @@ function onState(s) {
   $('bt').textContent = t1(s.bt);
   $('et').textContent = t1(s.et);
   $('ror').textContent = s.t_roast > 0 ? R(s.ror_bt).toFixed(1) : '--';
+  // Estimated time to DRY / first crack (the simulator's projection at the
+  // current heat), counting down; "stall" when the beans won't get there.
+  for (const [id, v] of [['etaDry', s.eta_dry_s], ['etaFc', s.eta_fc_s]]) {
+    const ok = typeof v === 'number' && v >= 0, stall = v === -2;
+    $(id).textContent = ok ? fmtTime(Math.ceil(v)) : stall ? 'stall' : '--:--';
+    $(id).classList.toggle('na', !ok && !stall);
+    $(id).classList.toggle('stall', stall);
+  }
   for (const el of document.querySelectorAll('[data-ctl]')) {
     const c = s.controls[el.dataset.ctl]; if (!c) continue;
     if (el.type === 'checkbox') el.checked = c.value >= 50;

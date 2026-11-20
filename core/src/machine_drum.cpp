@@ -117,6 +117,7 @@ void DrumMachine::step(double dt, MachineInputs& in) {
         // Quasi-steady drum air
         T_air_ = (mcp * T_in_ + P.wall_air_UA * T_drum_ + sumHAT) / (mcp + P.wall_air_UA + sumHA);
 
+        double envU = 0, envUT = 0;  // for tel_.bean_env_C
         for (auto& p : parcels) {
             double c = p.spot_T, e = p.q_in;
             double A = p.area(k);
@@ -126,11 +127,15 @@ void DrumMachine::step(double dt, MachineInputs& in) {
             double qc = UAi * (T_drum_ - p.T_s);
             double qr = Qrad * share;
             p.q_in = qc + hA * (T_air_ - p.T_s) + qr + Pir * share;
+            envU += p.count * (UAi + hA);
+            envUT += p.count * (UAi * T_drum_ + hA * T_air_ + qr + Pir * share);
             Qbeans_from_drum += p.count * (qc + qr);
             // Hot spot where a bean rests on the drum wall.
             double contactFrac = clamp01(c / 2.0);
             p.spot_T = p.T_s + (T_drum_ - p.T_s) * (P.h_contact / (P.h_contact + 200.0)) * contactFrac;
         }
+        // Equilibrium of q = sum U (T_src - T_s) + radiation/IR: the beans' target.
+        tel_.bean_env_C = envU > 0 ? envUT / envU : -1;
         if (q < 0.25) {
             alarms |= AlarmBedStalled;
             tel_.bed_state = "static";
@@ -148,6 +153,7 @@ void DrumMachine::step(double dt, MachineInputs& in) {
         tel_.agitation = s;
         tel_.bt_immersion = 0;
         tel_.bed_state = "empty";
+        tel_.bean_env_C = -1;
     }
 
     // ---- drum shell(s)

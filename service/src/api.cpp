@@ -117,6 +117,8 @@ json::Value Host::stateJson(bool full) const {
     v["et"] = r1(s.et, 2);
     v["ror_bt"] = r1(s.ror_bt, 2);
     v["ror_et"] = r1(s.ror_et, 2);
+    v["eta_dry_s"] = s.eta_dry_s < 0 ? s.eta_dry_s : r1(s.eta_dry_s, 0);  // -1 n/a, -2 stalling
+    v["eta_fc_s"] = s.eta_fc_s < 0 ? s.eta_fc_s : r1(s.eta_fc_s, 0);
     json::Value probes = json::Value::array();
     for (const auto& p : s.probes) {
         json::Value o = json::Value::object();
@@ -144,6 +146,7 @@ json::Value Host::stateJson(bool full) const {
     m["exhaust_C"] = r1(s.tele.exhaust_C);
     m["air_C"] = r1(s.tele.air_C);
     m["wall_C"] = r1(s.tele.wall_C);
+    m["bean_env_C"] = s.tele.bean_env_C < 0 ? -1.0 : r1(s.tele.bean_env_C);
     m["element_C"] = r1(s.tele.element_C);
     m["agitation"] = r1(s.tele.agitation, 2);
     m["mix_quality"] = r1(s.tele.mix_quality, 2);

@@ -94,6 +94,7 @@ void StirPanMachine::step(double dt, MachineInputs& in) {
         double panAirUA = P.pan_air_UA * (1.0 - 0.6 * cover);
         T_dome_ = (panAirUA * T_pan_ + sumHAT + (ventUA + P.dome_loss_UA) * Ta) /
                   (panAirUA + sumHA + ventUA + P.dome_loss_UA);
+        double envU = 0, envUT = 0;  // for tel_.bean_env_C
         for (auto& p : parcels) {
             double contact = p.q_in;
             double UAc = P.h_contact * 0.8 * p.d * p.d * contact;
@@ -102,7 +103,11 @@ void StirPanMachine::step(double dt, MachineInputs& in) {
             p.q_in = qc + hA * (T_dome_ - p.T_s);
             Qpan_beans += p.count * qc;
             p.spot_T = p.T_s + (T_pan_ - p.T_s) * (P.h_contact / (P.h_contact + 200.0)) * std::min(1.0, 2.0 * contact);
+            envU += p.count * (UAc + hA);
+            envUT += p.count * (UAc * T_pan_ + hA * T_dome_);
         }
+        // Equilibrium of pan contact + dome air: the beans' target.
+        tel_.bean_env_C = envU > 0 ? envUT / envU : -1;
         if (rpm < 0.3) {
             alarms |= AlarmBedStalled;
             tel_.bed_state = "static";
@@ -117,6 +122,7 @@ void StirPanMachine::step(double dt, MachineInputs& in) {
         tel_.agitation = rpm / std::max(1e-9, P.stir_rpm_max);
         tel_.bt_immersion = 0;
         tel_.bed_state = "empty";
+        tel_.bean_env_C = -1;
     }
 
     double panAirUA = P.pan_air_UA * (1.0 - 0.6 * cover);

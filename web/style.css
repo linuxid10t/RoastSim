@@ -89,6 +89,10 @@ main { flex: 1; display: grid; grid-template-columns: 360px 1fr 300px; gap: 12px
 .big b { font-size: 26px; font-variant-numeric: tabular-nums; }
 .big i { font-style: normal; }
 #bt { color: var(--bt); } #et { color: var(--et); } #ror { color: var(--ror); }
+.readouts .eta { margin-left: 14px; }  /* gap between readings and estimates */
+#etaDry { color: var(--ph0); } #etaFc { color: var(--ph1); }
+#etaDry.na, #etaFc.na { color: var(--muted); }
+#etaDry.stall, #etaFc.stall { color: var(--warn); }
 #chart { width: 100%; height: 520px; display: block; }
 .alarms { min-height: 22px; margin-top: 6px; } .alarms span { background: var(--warn); color: #fff; border-radius: 4px; padding: 2px 6px; margin-right: 6px; font-size: 12px; }
 .side h3 { margin: 12px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
