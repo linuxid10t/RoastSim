@@ -638,8 +638,8 @@ void paintGraph(HDC dc, RECT area) {
         SelectObject(dc, old);
         DeleteObject(p);
     };
-    series(RGB(70, 110, 200), S(2), [](const rs_sample& s) { return static_cast<double>(s.et); }, false);
-    series(RGB(200, 60, 40), S(2), [](const rs_sample& s) { return static_cast<double>(s.bt); }, false);
+    series(RGB(200, 60, 40), S(2), [](const rs_sample& s) { return static_cast<double>(s.et); }, false);
+    series(RGB(70, 110, 200), S(2), [](const rs_sample& s) { return static_cast<double>(s.bt); }, false);
     if (roast) {
         series(RGB(230, 150, 40), 1, [](const rs_sample& s) { return s.t_roast > 20 ? static_cast<double>(s.ror_bt) : -5.0; }, true);
         // No beans before CHARGE: skip (-1) rather than drawing 0 C (= 32 F).
@@ -662,7 +662,7 @@ void paintGraph(HDC dc, RECT area) {
     SelectObject(dc, oldPen);
     DeleteObject(ev);
 
-    struct L { COLORREF c; const wchar_t* n; } leg[] = {{RGB(200, 60, 40), L"BT"}, {RGB(70, 110, 200), L"ET"},
+    struct L { COLORREF c; const wchar_t* n; } leg[] = {{RGB(70, 110, 200), L"BT"}, {RGB(200, 60, 40), L"ET"},
                                                       {RGB(230, 150, 40), L"RoR (right axis)"},
                                                       {RGB(150, 120, 90), L"true bean temp"}};
     int lx = l + S(30);
