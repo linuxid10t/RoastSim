@@ -17,7 +17,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 |---|---|---|
 | `state` | `full` (bool) | live state (below); `full` adds `roaster_def` |
 | `list` | | `roasters` (id, name, kind, controls, probes, batch limits), `beans` |
-| `preset_types` | — | starter roaster `types` with `id`, `name`, and `description` |
+| `preset_types` | — | starter roaster `types` with `id`, `name`, and `description`, and `air_patterns` for the fluid-bed starter |
 | `preset_form` | `kind` (`bean` or `roaster`), `mode` (`create` or `edit`), `roaster_type` for roaster creation or `id` otherwise | editable `sections`, preset `revision`, and whether it is `custom` |
 | `preset_save` | same source fields as `preset_form`, `revision` from the form, `changes` | save and return the custom preset `id` and `name` |
 | `load` | `roaster`, `bean` (either optional) | load a cold, empty machine and set `env.line_voltage` to the roaster's rating |
@@ -77,9 +77,11 @@ Alarm names (and C API bit numbers): `thermostat_open` (0), `fuse_blown` (1), `b
 
 `roaster.nominal_V` is the preset's wall-voltage default. `env.line_voltage` is the current wall voltage before wiring sag.
 
-For `preset_save`, send only changed fields using the keys in `preset_form`. A new preset needs a name. Roaster creation starts from a type returned by `preset_types`. Only custom roasters can be edited, and the active roaster's `roaster.custom` flag is available in `state`. Editing a bundled bean saves a custom copy. Editing a custom preset keeps its ID. The `catalog_revision` returned by `state` and `list` advances after a save. The `roaster.revision` in `state` advances on load.
+For `preset_save`, send the changed fields from the setup or editor. A new preset needs a name. Roaster creation starts from a type returned by `preset_types`. Only custom roasters can be edited, and the active roaster's `roaster.custom` flag is available in `state`. Editing a bundled bean saves a custom copy. Editing a custom preset keeps its ID. The `catalog_revision` returned by `state` and `list` advances after a save. The `roaster.revision` in `state` advances on load.
 
 For custom roasters, `controls.heat.levels` and `controls.fan.levels` accept whole numbers from 0 through 100. A count of 0 uses a percentage slider. A positive count is returned as `levels` on the corresponding entry in `roaster_def.controls`. Level 0 is Off and level N is 100%, with equal percentage steps in between. The state, `set` command, C API and logger protocols still use percent. Requested percentages snap to the nearest level on a numbered control. Positive numbered fan commands on fluid-bed roasters use the motor's running range above its stall threshold.
+
+Fluid-bed definitions can set `fluid_bed.air_pattern` to `upflow` (the default), `central_spout`, `tangential_swirl`, or `side_jet`. For creation, choose from the starter's `air_patterns` in `preset_types`, with the default listed first. For editing, use the field's `choices` in `preset_form`. Both lists provide an `id`, `name`, and `description`. Send the selected ID in `changes["fluid_bed.air_pattern"]` when saving. The active pattern appears in `roaster_def.fluid_bed.air_pattern` and in the `visual` response as `air_pattern`.
 
 `eta_dry_s` / `eta_fc_s` are the simulator's estimate of roast seconds until it would call DRY (bean mass mean at 150 C) and first crack (2 % of beans cracked, using each bean group's own crack threshold). The beans are projected forward along a Newton heating curve: they level off at the temperature the machine is driving them towards (`machine.bean_env_C`: hot air, drum wall, pan and radiation weighted by how strongly each couples to the beans), with the time constant that matches their current smoothed heating rate. Values are `-1` when not applicable (not roasting, the first 20 s after CHARGE, the event has happened or been marked, or, for first crack, before DRY: until drying ends evaporation slows the beans in a way the projection can't see) and `-2` when the milestone is still ahead but won't be reached at the current heat (stalling). The estimate assumes the controls stay where they are, so it moves when you change heat or airflow, and it tightens as the milestone nears. The C API has the same values in `rs_state.eta_dry_s` / `eta_fc_s` (API 1.2).
 

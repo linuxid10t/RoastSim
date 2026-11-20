@@ -646,6 +646,7 @@ VisualState Simulation::visual() const {
     v.roaster_id = roaster_.id;
     switch (roaster_.kind) {
         case RoasterKind::FluidBed:
+            v.air_pattern = roaster_.fluid.air_pattern;
             v.geometry.chamber_diameter = static_cast<float>(roaster_.fluid.chamber_diameter_m);
             v.geometry.chamber_height = static_cast<float>(roaster_.fluid.chamber_height_m);
             break;

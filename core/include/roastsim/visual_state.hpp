@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "roastsim/types.hpp"
+#include "roastsim/roaster_def.hpp"
 
 namespace roastsim {
 
@@ -36,6 +36,7 @@ struct VisualState {
     std::uint64_t frame = 0;     // increases every simulation step
     double t_session = 0;
     RoasterKind kind = RoasterKind::FluidBed;
+    FluidBedAirPattern air_pattern = FluidBedAirPattern::Upflow;
     std::string roaster_id;
     VisualGeometry geometry;
     BeanLocation bean_location = BeanLocation::None;

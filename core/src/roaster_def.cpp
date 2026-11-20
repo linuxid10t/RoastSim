@@ -20,6 +20,21 @@ double ControlDef::snapToLevel(double percent) const {
     return levels > 0 ? levelPercent(controlLevel(percent, levels), levels) : percent;
 }
 
+const FluidBedAirPatternInfo& fluidBedAirPatternInfo(FluidBedAirPattern pattern) {
+    for (const auto& info : kFluidBedAirPatterns)
+        if (info.pattern == pattern) return info;
+    return kFluidBedAirPatterns[0];
+}
+
+bool fluidBedAirPatternFromName(const std::string& name, FluidBedAirPattern& pattern) {
+    for (const auto& info : kFluidBedAirPatterns) {
+        if (info.id != name) continue;
+        pattern = info.pattern;
+        return true;
+    }
+    return false;
+}
+
 const ControlDef* RoasterDef::control(Control c) const {
     for (const auto& cd : controls)
         if (cd.id == c) return &cd;
@@ -157,7 +172,11 @@ bool RoasterDef::fromJson(const json::Value& v, RoasterDef& out, std::string* er
     if (d.probeIndex("BT") < 0) return fail("roaster '" + d.id + "' must define a probe with id \"BT\"");
     if (d.probeIndex("ET") < 0) return fail("roaster '" + d.id + "' must define a probe with id \"ET\"");
 
-    readFluid(v["fluid_bed"], d.fluid);
+    const auto& fluid = v["fluid_bed"];
+    if (d.kind == RoasterKind::FluidBed && fluid.has("air_pattern") &&
+        !fluidBedAirPatternFromName(fluid.get("air_pattern", ""), d.fluid.air_pattern))
+        return fail("roaster '" + d.id + "': unknown fluid-bed air pattern");
+    readFluid(fluid, d.fluid);
     readDrum(v["drum"], d.drum);
     readPan(v["stir_pan"], d.pan);
     const json::Value& c = v["cooling"];
@@ -174,6 +193,8 @@ json::Value RoasterDef::describe() const {
     v["name"] = name;
     v["description"] = description;
     v["kind"] = roasterKindName(kind);
+    if (kind == RoasterKind::FluidBed)
+        v["fluid_bed"]["air_pattern"] = fluidBedAirPatternInfo(fluid.air_pattern).id;
     json::Value b = json::Value::object();
     b["default_g"] = batch.default_g;
     b["min_g"] = batch.min_g;

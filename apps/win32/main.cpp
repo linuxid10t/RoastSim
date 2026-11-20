@@ -174,6 +174,7 @@ struct App {
 
     std::vector<std::string> roasterIds, beanIds;
     Value roasterDef;
+    roastsim::FluidBedAirPattern airPattern = roastsim::FluidBedAirPattern::Upflow;
     std::string currentRoaster;
     bool currentRoasterCustom = false;
     double catalogRevision = 0, roasterRevision = 0;
@@ -503,8 +504,10 @@ void applyRoasterDef() {
     Value st = Value::object();
     st["cmd"] = "state";
     st["full"] = true;
-    Value s = command(st);
+    const Value s = command(st);
     g.roasterDef = s["roaster_def"];
+    g.airPattern = roastsim::FluidBedAirPattern::Upflow;
+    roastsim::fluidBedAirPatternFromName(s["roaster_def"]["fluid_bed"].get("air_pattern", ""), g.airPattern);
     g.currentRoaster = s["roaster"].get("id", "");
     g.currentRoasterCustom = s["roaster"].getBool("custom", false);
     g.roasterRevision = s["roaster"].get("revision", 0.0);
@@ -1080,6 +1083,38 @@ void paintGraph(HDC dc, RECT area) {
     }
 }
 
+struct BeanPosition { double x, y; };
+
+BeanPosition fluidBedBeanPosition(roastsim::FluidBedAirPattern pattern, double sx, double sy, double phase,
+                                 double t, double agitation, double mixing) {
+    using roastsim::FluidBedAirPattern;
+    const double lift = roastsim::clamp01(agitation / 1.25) * (0.35 + 0.65 * mixing);
+    const double baseX = 0.08 + 0.84 * sx, baseY = 0.86 + 0.08 * sy;
+    const double p = phase + t * (pattern == FluidBedAirPattern::TangentialSwirl ? 3 : 2);
+    double x = baseX, y = baseY;
+    switch (pattern) {
+        case FluidBedAirPattern::CentralSpout:
+            x = 0.5 + (sx < 0.5 ? -1 : 1) * (0.28 + 0.15 * sy) * (0.54 + 0.46 * std::cos(p));
+            y = 0.57 + (0.24 + 0.15 * sy) * std::sin(p);
+            break;
+        case FluidBedAirPattern::TangentialSwirl: {
+            const double radius = 0.35 + 0.65 * sy;
+            x = 0.5 + 0.44 * radius * std::cos(p);
+            y = 0.59 + 0.23 * radius * std::sin(p) + 0.04 * std::sin(2 * p);
+            break;
+        }
+        case FluidBedAirPattern::SideJet:
+            x = 0.5 + (0.23 + 0.2 * sx) * std::cos(p);
+            y = 0.57 + (0.19 + 0.18 * sy) * std::sin(p);
+            break;
+        case FluidBedAirPattern::Upflow:
+            x += 0.025 * std::sin(p);
+            y -= (0.19 + 0.56 * sy) * (0.5 + 0.5 * std::sin(p));
+            break;
+    }
+    return {roastsim::lerp(baseX, x, lift), roastsim::lerp(baseY, y, lift)};
+}
+
 void paintBeans(HDC dc, RECT area) {
     HBRUSH bg = CreateSolidBrush(RGB(236, 232, 224));
     FillRect(dc, &area, bg);
@@ -1109,15 +1144,19 @@ void paintBeans(HDC dc, RECT area) {
     }
     double time = GetTickCount() / 1000.0;
     float agit = std::min(2.0f, g.vinfo.agitation) * (g.vinfo.bean_location == 1 ? 1.0f : 0.15f);
+    const bool fluidBed = g.vinfo.kind == RS_KIND_FLUID_BED && g.vinfo.bean_location == 1;
     int w = area.right - area.left - S(20), h = area.bottom - area.top - S(30);
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(DC_BRUSH));
     HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
     for (size_t i = 0; i < n; ++i) {
         const rs_visual_bean& b = g.vbeans[i];
-        double jx = std::sin(time * 3.1 + g.beanPhase[i]) * 0.02 * agit;
-        double jy = std::cos(time * 2.3 + g.beanPhase[i] * 1.3) * 0.04 * agit;
-        int cx = area.left + S(10) + static_cast<int>((g.beanX[i] + jx) * w);
-        int cy = area.top + S(24) + static_cast<int>((g.beanY[i] + jy) * h);
+        const double sx = g.beanX[i], sy = g.beanY[i], phase = g.beanPhase[i];
+        const auto position = fluidBed ? fluidBedBeanPosition(g.airPattern, sx, sy, phase, time,
+                                                             g.vinfo.agitation, g.vinfo.mix_quality) :
+            BeanPosition{sx + std::sin(time * 3.1 + phase) * 0.02 * agit,
+                         sy + std::cos(time * 2.3 + phase * 1.3) * 0.04 * agit};
+        int cx = area.left + S(10) + static_cast<int>(position.x * w);
+        int cy = area.top + S(24) + static_cast<int>(position.y * h);
         int rad = std::max(2, S(static_cast<int>(b.size_mm * 0.75)));
         auto ch = [](float c) { return static_cast<int>(std::clamp(c, 0.0f, 1.0f) * 255); };
         SetDCBrushColor(dc, RGB(ch(b.rgb[0]), ch(b.rgb[1]), ch(b.rgb[2])));
@@ -1252,7 +1291,7 @@ bool readNumber(HWND dlg, int id, double& out) {
 
 // Both the creator and editor use the fields returned by the host.
 struct PresetDraft {
-    std::string kind, id, loadedId;
+    std::string kind, id, loadedId, airPattern;
     bool creating = false;
     int page = 0;
     Value templates, form, saved;
@@ -1313,15 +1352,63 @@ void fitPresetPage(HWND dlg, int rows) {
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+int fillPresetChoices(HWND combo, const Value& options, const std::string& current) {
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    int selected = 0, index = 0;
+    for (const auto& option : options.items()) {
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(option.get("name", "")).c_str()));
+        if (option.get("id", "") == current) selected = index;
+        ++index;
+    }
+    SendMessageW(combo, CB_SETCURSEL, selected, 0);
+    return selected;
+}
+
+void showStarterPatternDetail(HWND dlg, const Value& option) {
+    SetDlgItemTextW(dlg, IDC_PRESET_START_PATTERN_DETAIL, widen(option.get("description", "")).c_str());
+}
+
 void showPresetTypeDetail(HWND dlg, const PresetDraft& d, int index) {
-    SetDlgItemTextW(dlg, IDC_PRESET_DETAIL, widen(d.templates.at(index).get("description", "")).c_str());
+    const auto& type = d.templates.at(index);
+    SetDlgItemTextW(dlg, IDC_PRESET_DETAIL, widen(type.get("description", "")).c_str());
+    const auto& patterns = type["air_patterns"];
+    const bool showPattern = patterns.size() > 0;
+    HWND combo = GetDlgItem(dlg, IDC_PRESET_VALUE_CHOICE);
+    HWND label = GetDlgItem(dlg, IDC_PRESET_START_PATTERN_LABEL);
+    ShowWindow(label, showPattern ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(dlg, IDC_PRESET_START_PATTERN_DETAIL), showPattern ? SW_SHOW : SW_HIDE);
+    if (showPattern) {
+        RECT position{0, 0, 188, 81};
+        MapDialogRect(dlg, &position);
+        SetWindowPos(combo, label, position.right, position.bottom, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        const int selected = fillPresetChoices(combo, patterns, d.airPattern);
+        showStarterPatternDetail(dlg, patterns.at(selected));
+    }
+    ShowWindow(combo, showPattern ? SW_SHOW : SW_HIDE);
+    fitPresetPage(dlg, showPattern ? 5 : 2);
+}
+
+std::wstring presetStep(const PresetDraft& d) {
+    return fmt(L"Step %d of %d", d.page + 2, static_cast<int>(d.form["sections"].size()) + 1);
+}
+
+void showPresetChoiceHelp(HWND dlg, const PresetDraft& d, const Value& options) {
+    const int selected = static_cast<int>(SendDlgItemMessageW(dlg, IDC_PRESET_VALUE_CHOICE, CB_GETCURSEL, 0, 0));
+    if (selected < 0) return;
+    const auto description = widen(options.at(selected).get("description", ""));
+    const auto help = d.creating ? presetStep(d) + L"\r\n" + description : description;
+    SetDlgItemTextW(dlg, IDC_PRESET_HELP, help.c_str());
 }
 
 void showPresetPage(HWND dlg, const PresetDraft& d) {
     const bool onTemplate = d.page < 0;
     const auto& sections = d.form["sections"];
     HWND choices = GetDlgItem(dlg, IDC_PRESET_CHOICES);
+    HWND valueChoice = GetDlgItem(dlg, IDC_PRESET_VALUE_CHOICE);
     const bool keepSectionFocus = !d.creating && GetFocus() == choices;
+    ShowWindow(valueChoice, SW_HIDE);
+    ShowWindow(GetDlgItem(dlg, IDC_PRESET_START_PATTERN_LABEL), SW_HIDE);
+    ShowWindow(GetDlgItem(dlg, IDC_PRESET_START_PATTERN_DETAIL), SW_HIDE);
     ShowWindow(choices, onTemplate || !d.creating ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(dlg, IDC_PRESET_DETAIL), onTemplate && d.startsFromType() ? SW_SHOW : SW_HIDE);
     SetDlgItemTextW(dlg, IDC_PRESET_ERROR, L"");
@@ -1330,20 +1417,14 @@ void showPresetPage(HWND dlg, const PresetDraft& d) {
     const bool last = !onTemplate && d.page + 1 >= static_cast<int>(sections.size());
     SetDlgItemTextW(dlg, IDOK, d.creating && !last ? L"Next" : L"Save");
     if (onTemplate) {
-        SendMessageW(choices, CB_RESETCONTENT, 0, 0);
         SetDlgItemTextW(dlg, IDC_PRESET_HELP, d.startsFromType() ?
                         L"Choose a basic roaster type." : L"Choose a similar bean to start from.");
         SetDlgItemTextW(dlg, IDC_PRESET_SECTION, d.startsFromType() ? L"Machine type" : L"Template");
-        int selected = 0, index = 0;
-        for (const auto& preset : d.templates.items()) {
-            SendMessageW(choices, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(preset.get("name", "")).c_str()));
-            if (preset.get("id", "") == d.id) selected = index;
-            ++index;
-        }
-        SendMessageW(choices, CB_SETCURSEL, selected, 0);
+        const int selected = fillPresetChoices(choices, d.templates, d.id);
         if (d.startsFromType()) showPresetTypeDetail(dlg, d, selected);
+        else fitPresetPage(dlg, 2);
     } else if (d.creating) {
-        SetDlgItemTextW(dlg, IDC_PRESET_HELP, fmt(L"Step %d of %d", d.page + 2, static_cast<int>(sections.size()) + 1).c_str());
+        SetDlgItemTextW(dlg, IDC_PRESET_HELP, presetStep(d).c_str());
         SetDlgItemTextW(dlg, IDC_PRESET_SECTION, widen(sections.at(d.page).get("title", "")).c_str());
     } else {
         SetDlgItemTextW(dlg, IDC_PRESET_HELP, d.form.getBool("custom", false) ?
@@ -1356,21 +1437,35 @@ void showPresetPage(HWND dlg, const PresetDraft& d) {
         SendMessageW(choices, CB_SETCURSEL, d.page, 0);
     }
     const auto& fields = onTemplate ? Value{} : sections.at(d.page)["fields"];
+    HWND focus = onTemplate || keepSectionFocus ? choices : GetDlgItem(dlg, IDC_PRESET_FIELD0);
     for (int i = 0; i < kPresetRows; ++i) {
         HWND caption = GetDlgItem(dlg, IDC_PRESET_LABEL0 + i), input = GetDlgItem(dlg, IDC_PRESET_FIELD0 + i);
         const bool visible = i < static_cast<int>(fields.size());
-        ShowWindow(caption, visible ? SW_SHOW : SW_HIDE);
-        ShowWindow(input, visible ? SW_SHOW : SW_HIDE);
-        if (!visible) continue;
         const auto& field = fields.at(i);
+        const bool choice = field.has("choices");
+        ShowWindow(caption, visible ? SW_SHOW : SW_HIDE);
+        ShowWindow(input, visible && !choice ? SW_SHOW : SW_HIDE);
+        if (!visible) continue;
         const auto key = field.get("key", "");
         const auto& value = d.changes.has(key) ? d.changes[key] : field["value"];
         SetWindowTextW(caption, widen(field.get("label", "")).c_str());
+        if (choice) {
+            RECT rect{};
+            GetWindowRect(input, &rect);
+            POINT position{rect.left, rect.top};
+            ScreenToClient(dlg, &position);
+            SetWindowPos(valueChoice, caption, position.x, position.y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            fillPresetChoices(valueChoice, field["choices"], value.str());
+            ShowWindow(valueChoice, SW_SHOW);
+            showPresetChoiceHelp(dlg, d, field["choices"]);
+            if (focus == input) focus = valueChoice;
+            continue;
+        }
         SendMessageW(input, EM_SETLIMITTEXT, static_cast<WPARAM>(field.get("limit", 32.0)), 0);
         SetWindowTextW(input, widen(value.isString() ? value.str() : roastsim::json::formatNumber(value.num())).c_str());
     }
-    fitPresetPage(dlg, onTemplate ? 2 : static_cast<int>(fields.size()));
-    SetFocus(onTemplate || keepSectionFocus ? choices : GetDlgItem(dlg, IDC_PRESET_FIELD0));
+    if (!onTemplate) fitPresetPage(dlg, static_cast<int>(fields.size()));
+    SetFocus(focus);
 }
 
 bool readPresetPage(HWND dlg, PresetDraft& d, bool validate = true) {
@@ -1379,10 +1474,14 @@ bool readPresetPage(HWND dlg, PresetDraft& d, bool validate = true) {
     for (int i = 0; i < static_cast<int>(fields.size()) && i < kPresetRows; ++i) {
         const auto& field = fields.at(i);
         const auto key = field.get("key", "");
-        const int input = IDC_PRESET_FIELD0 + i;
+        const int input = field.has("choices") ? IDC_PRESET_VALUE_CHOICE : IDC_PRESET_FIELD0 + i;
         Value value;
         std::wstring message;
-        if (field["value"].isString()) {
+        if (field.has("choices")) {
+            const int selected = static_cast<int>(SendDlgItemMessageW(dlg, input, CB_GETCURSEL, 0, 0));
+            if (selected < 0) message = fmt(L"Choose a value for %s.", widen(field.get("label", "")).c_str());
+            else value = field["choices"].at(selected).get("id", "");
+        } else if (field["value"].isString()) {
             value = narrow(getText(GetDlgItem(dlg, input)));
             if (key == "name" && value.str().find_first_not_of(" \t\r\n") == std::string::npos)
                 message = L"Enter a preset name.";
@@ -1396,7 +1495,8 @@ bool readPresetPage(HWND dlg, PresetDraft& d, bool validate = true) {
                               whole ? L"a whole number " : L"", min, max);
             } else value = number;
         }
-        if (!message.empty() && validate) {
+        if (!message.empty()) {
+            if (!validate) continue;
             SetDlgItemTextW(dlg, IDC_PRESET_ERROR, message.c_str());
             SetFocus(GetDlgItem(dlg, input));
             return false;
@@ -1422,6 +1522,20 @@ INT_PTR CALLBACK presetDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     const int selected = static_cast<int>(SendDlgItemMessageW(dlg, IDC_PRESET_CHOICES, CB_GETCURSEL, 0, 0));
     switch (LOWORD(wp)) {
         case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+        case IDC_PRESET_VALUE_CHOICE:
+            if (HIWORD(wp) != CBN_SELCHANGE) return TRUE;
+            if (d.page < 0 && d.startsFromType() && selected >= 0) {
+                const int pattern = static_cast<int>(SendDlgItemMessageW(dlg, IDC_PRESET_VALUE_CHOICE, CB_GETCURSEL, 0, 0));
+                if (pattern < 0) return TRUE;
+                const auto& option = d.templates.at(selected)["air_patterns"].at(pattern);
+                d.airPattern = option.get("id", "");
+                showStarterPatternDetail(dlg, option);
+            } else if (d.page >= 0) {
+                const auto& fields = d.form["sections"].at(d.page)["fields"];
+                for (const auto& field : fields.items())
+                    if (field.has("choices")) showPresetChoiceHelp(dlg, d, field["choices"]);
+            }
+            return TRUE;
         case IDC_PRESET_CHOICES:
             if (HIWORD(wp) != CBN_SELCHANGE || selected < 0) return TRUE;
             if (d.startsFromType() && d.page < 0) {
@@ -1439,7 +1553,13 @@ INT_PTR CALLBACK presetDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case IDOK: {
             if (d.page < 0) {
                 if (selected < 0) return TRUE;
-                d.id = d.templates.at(selected).get("id", "");
+                const auto& type = d.templates.at(selected);
+                d.id = type.get("id", "");
+                if (type["air_patterns"].size() > 0) {
+                    const int pattern = static_cast<int>(SendDlgItemMessageW(dlg, IDC_PRESET_VALUE_CHOICE, CB_GETCURSEL, 0, 0));
+                    if (pattern < 0) return TRUE;
+                    d.airPattern = type["air_patterns"].at(pattern).get("id", "");
+                }
                 std::string error;
                 if (d.id != d.loadedId && !loadPresetForm(d, error)) {
                     SetDlgItemTextW(dlg, IDC_PRESET_ERROR, widen(error).c_str());
@@ -1460,6 +1580,7 @@ INT_PTR CALLBACK presetDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             d.setSource(c);
             c["revision"] = d.form.get("revision", "");
             c["changes"] = d.changes;
+            if (d.startsFromType() && d.id == "fluid_bed") c["changes"]["fluid_bed.air_pattern"] = d.airPattern;
             d.saved = command(c);
             if (d.saved.getBool("ok", false)) EndDialog(dlg, IDOK);
             else SetDlgItemTextW(dlg, IDC_PRESET_ERROR, widen(d.saved.get("error", "Could not save the preset.")).c_str());

@@ -11,6 +11,27 @@
 
 namespace roastsim {
 
+namespace {
+
+struct BedCirculation {
+    double lift;          // how much of the airflow lifts the bed
+    double turnover_s;    // exposure correlation time once the bed is fully moving
+    double concentration; // relative difference in exposure across the bed
+    double carryover;     // tendency to carry beans out at high flow
+};
+
+BedCirculation circulationFor(FluidBedAirPattern pattern) {
+    switch (pattern) {
+        case FluidBedAirPattern::CentralSpout:     return {1.12, 2.8, 1.65, 1.18};
+        case FluidBedAirPattern::TangentialSwirl: return {0.88, 1.2, 0.70, 0.82};
+        case FluidBedAirPattern::SideJet:          return {1.03, 1.8, 1.35, 1.04};
+        case FluidBedAirPattern::Upflow:          return {1.00, 2.0, 1.00, 1.00};
+    }
+    return {1.00, 2.0, 1.00, 1.00};
+}
+
+}  // namespace
+
 FluidBedMachine::FluidBedMachine(const RoasterDef& def) : MachineModel(def) {}
 
 void FluidBedMachine::reset(const Environment& env) {
@@ -104,15 +125,16 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
         }
         double liftFactor = nSum > 0 ? ratioSum / nSum : 1.0;
         double required = std::max(1e-6, P.fluidize_flow_per_kg * M * liftFactor * rho);
-        double a = flow_ / required;
+        const auto pattern = circulationFor(P.air_pattern);
+        double a = flow_ / required * pattern.lift;
         double q = smoothstep(0.55, 1.05, a);
         tel_.agitation = a;
         tel_.mix_quality = q;
-        beans->updateMixing(dt, lerp(45.0, 2.0, q), *in.rng);
+        beans->updateMixing(dt, lerp(45.0, pattern.turnover_s, q), *in.rng);
 
         double h = P.h_ref * std::pow(std::max(1e-6, flow_ / P.fan_max_flow), P.h_flow_exp) * (0.55 + 0.45 * q);
-        double sDyn = 0.15 + 0.5 * (1.0 - q);
-        double sSt = P.unevenness * (1.0 + 2.0 * (1.0 - q));
+        double sDyn = (0.15 + 0.5 * (1.0 - q)) * pattern.concentration;
+        double sSt = P.unevenness * (1.0 + 2.0 * (1.0 - q)) * pattern.concentration;
 
         double sumHA = 0, sumHAT = 0;
         for (auto& p : parcels) {
@@ -136,13 +158,14 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
         // for the inlet air temperature.
         tel_.bean_env_C = T_in_;
 
+        const double carryover = a * pattern.carryover;
         if (a < 0.7) {
             alarms |= AlarmBedStalled;
             tel_.bed_state = "stalled";
-        } else if (a > P.eject_agitation) {
+        } else if (carryover > P.eject_agitation) {
             alarms |= AlarmBeansEjecting;
             tel_.bed_state = "ejecting";
-            beans->removeFraction(0.004 * (a - P.eject_agitation) * dt);
+            beans->removeFraction(0.004 * (carryover - P.eject_agitation) * dt);
         } else {
             tel_.bed_state = a < 1.0 ? "sluggish" : "fluidized";
         }

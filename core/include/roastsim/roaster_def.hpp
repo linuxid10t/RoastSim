@@ -41,8 +41,32 @@ struct ProbeDef {
     double offset = 0.0;
 };
 
+enum class FluidBedAirPattern { Upflow, CentralSpout, TangentialSwirl, SideJet };
+
+struct FluidBedAirPatternInfo {
+    FluidBedAirPattern pattern;
+    const char* id;
+    const char* name;
+    const char* description;
+};
+
+inline constexpr FluidBedAirPatternInfo kFluidBedAirPatterns[] = {
+    {FluidBedAirPattern::Upflow, "upflow", "Distributed upflow",
+     "Air rises across the base and lifts beans throughout the chamber."},
+    {FluidBedAirPattern::CentralSpout, "central_spout", "Central spout",
+     "A central jet lifts beans and they fall back down near the walls."},
+    {FluidBedAirPattern::TangentialSwirl, "tangential_swirl", "Tangential swirl",
+     "Angled air makes the beans circle around the chamber as they lift."},
+    {FluidBedAirPattern::SideJet, "side_jet", "Side jet",
+     "A jet lifts beans on one side and they roll back down the other."},
+};
+
+const FluidBedAirPatternInfo& fluidBedAirPatternInfo(FluidBedAirPattern pattern);
+bool fluidBedAirPatternFromName(const std::string& name, FluidBedAirPattern& pattern);
+
 // Air roaster and popcorn popper.
 struct FluidBedParams {
+    FluidBedAirPattern air_pattern = FluidBedAirPattern::Upflow;
     std::string wiring = "independent";  // "independent" (modded/air roaster) or "stock"
     double heater_W = 1400;
     double nominal_V = 120;

@@ -1,6 +1,8 @@
 #include "roastsim/host.hpp"
 
+#include <algorithm>
 #include <filesystem>
+#include <string_view>
 
 #include "roastsim/platform.hpp"
 #include "sha1.hpp"
@@ -53,6 +55,18 @@ constexpr RoasterType kRoasterTypes[] = {
     })"},
 };
 
+Value airPatternOptions() {
+    Value options = Value::array();
+    for (const auto& pattern : kFluidBedAirPatterns) {
+        Value option = Value::object();
+        option["id"] = pattern.id;
+        option["name"] = pattern.name;
+        option["description"] = pattern.description;
+        options.push(std::move(option));
+    }
+    return options;
+}
+
 Value roasterTypes() {
     Value result = Value::object();
     result["ok"] = true;
@@ -62,6 +76,7 @@ Value roasterTypes() {
         entry["id"] = type.id;
         entry["name"] = type.name;
         entry["description"] = type.description;
+        if (std::string_view(type.id) == "fluid_bed") entry["air_patterns"] = airPatternOptions();
         types.push(std::move(entry));
     }
     result["types"] = std::move(types);
@@ -83,6 +98,12 @@ bool startRoaster(const std::string& id, RoasterDef& draft, std::string* why) {
 
 class Form {
 public:
+    void choice(const char* key, const char* label, const char* value, Value choices) {
+        Value field = entry(key, label, value);
+        field["choices"] = std::move(choices);
+        fields_.push(std::move(field));
+    }
+
     void text(const char* key, const char* label, const std::string& value, int limit) {
         Value field = entry(key, label, value);
         field["limit"] = limit;
@@ -140,7 +161,7 @@ Value beanForm(const BeanSpec& b) {
     return f.sections;
 }
 
-Value roasterForm(const RoasterDef& r) {
+Value roasterForm(const RoasterDef& r, bool showAirPattern) {
     Form f;
     f.text("name", "Name", r.name, 160);
     f.text("description", "Description", r.description, 500);
@@ -152,13 +173,17 @@ Value roasterForm(const RoasterDef& r) {
             f.number("fluid_bed.nominal_V", "Rated wall voltage (V)", r.nominalLineVoltage(), 50, 260);
             f.number("fluid_bed.heater_W", "Heater power (W)", r.fluid.heater_W, 1, 1000000);
             f.section("Capacity and power");
+            if (showAirPattern)
+                f.choice("fluid_bed.air_pattern", "Air pattern", fluidBedAirPatternInfo(r.fluid.air_pattern).id,
+                         airPatternOptions());
             f.number("fluid_bed.fan_max_flow", "Maximum airflow (kg/s)", r.fluid.fan_max_flow, 0.00001, 10);
             f.number("fluid_bed.fan_tau", "Fan response time (s)", r.fluid.fan_tau, 0.05, 120);
+            f.number("fluid_bed.fluidize_flow_per_kg", "Lift airflow (kg/s per kg)", r.fluid.fluidize_flow_per_kg, 0.00001, 10);
+            f.section("Airflow");
             f.number("fluid_bed.chamber_diameter_m", "Chamber diameter (m)", r.fluid.chamber_diameter_m, 0.01, 10);
             f.number("fluid_bed.chamber_height_m", "Chamber height (m)", r.fluid.chamber_height_m, 0.01, 10);
             f.number("fluid_bed.element_C", "Element heat capacity (J/K)", r.fluid.element_C, 1, 100000);
             f.number("fluid_bed.h_ref", "Full-fan heat transfer (W/m²K)", r.fluid.h_ref, 1, 1000);
-            f.number("fluid_bed.fluidize_flow_per_kg", "Lift airflow (kg/s per kg)", r.fluid.fluidize_flow_per_kg, 0.00001, 10);
             break;
         case RoasterKind::Drum:
             f.number("drum.nominal_V", "Rated wall voltage (V)", r.nominalLineVoltage(), 50, 260);
@@ -300,7 +325,8 @@ Value Host::presetCommand(const Value& cmd) {
     const BeanSpec* b = roaster ? nullptr : catalog_.bean(id);
     if (!r && !b) return error("That preset is no longer available.");
     const Value& original = r ? r->raw : b->raw;
-    const Value sections = r ? roasterForm(*r) : beanForm(*b);
+    // The creator shows air patterns on the machine type page. Saving still validates that choice.
+    const Value sections = r ? roasterForm(*r, !chooseType || action == "preset_save") : beanForm(*b);
     if (action == "preset_form") {
         Value result = Value::object();
         result["ok"] = true;
@@ -322,7 +348,13 @@ Value Host::presetCommand(const Value& cmd) {
             if (!changes.has(key)) continue;
             const auto label = field.get("label", "");
             const auto& value = changes[key];
-            if (field["value"].isString()) {
+            if (field.has("choices")) {
+                const auto& choices = field["choices"].items();
+                if (!value.isString() || std::none_of(choices.begin(), choices.end(), [&](const Value& option) {
+                        return option.get("id", "") == value.str();
+                    })) return error("Choose a valid value for " + label + ".");
+                applyField(definition, key, value);
+            } else if (field["value"].isString()) {
                 if (!value.isString() || value.str().size() > field.get("limit", 0.0))
                     return error(label + " is too long or invalid.");
                 if (value.str().find('\0') != std::string::npos) return error(label + " contains an invalid character.");

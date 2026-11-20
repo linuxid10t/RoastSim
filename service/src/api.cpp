@@ -252,6 +252,7 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         json::Value v = ok();
         v["frame"] = static_cast<double>(vs.frame);
         v["kind"] = roasterKindName(vs.kind);
+        if (vs.kind == RoasterKind::FluidBed) v["air_pattern"] = fluidBedAirPatternInfo(vs.air_pattern).id;
         v["bean_location"] = static_cast<int>(vs.bean_location);
         v["agitation"] = r1(vs.agitation, 3);
         v["mix_quality"] = r1(vs.mix_quality, 3);

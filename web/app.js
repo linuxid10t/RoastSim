@@ -588,6 +588,34 @@ function drawChart() {
 }
 
 let beanSeeds = null;
+
+function fluidBedBeanPosition(pattern, sx, sy, phase, t, agitation, mixing) {
+  const lift = Math.min(1, agitation / 1.25) * (0.35 + 0.65 * mixing);
+  const baseX = 0.08 + 0.84 * sx, baseY = 0.86 + 0.08 * sy;
+  const p = phase + t * (pattern === 'tangential_swirl' ? 3 : 2);
+  let x = baseX, y = baseY;
+  switch (pattern) {
+    case 'central_spout':
+      x = 0.5 + (sx < 0.5 ? -1 : 1) * (0.28 + 0.15 * sy) * (0.54 + 0.46 * Math.cos(p));
+      y = 0.57 + (0.24 + 0.15 * sy) * Math.sin(p);
+      break;
+    case 'tangential_swirl': {
+      const radius = 0.35 + 0.65 * sy;
+      x = 0.5 + 0.44 * radius * Math.cos(p);
+      y = 0.59 + 0.23 * radius * Math.sin(p) + 0.04 * Math.sin(2 * p);
+      break;
+    }
+    case 'side_jet':
+      x = 0.5 + (0.23 + 0.2 * sx) * Math.cos(p);
+      y = 0.57 + (0.19 + 0.18 * sy) * Math.sin(p);
+      break;
+    default:
+      x += 0.025 * Math.sin(p);
+      y -= (0.19 + 0.56 * sy) * (0.5 + 0.5 * Math.sin(p));
+  }
+  return [baseX + lift * (x - baseX), baseY + lift * (y - baseY)];
+}
+
 async function drawBeans() {
   const v = await send({ cmd: 'visual', max: 300 });
   const cv = $('beans'), dpr = window.devicePixelRatio || 1;
@@ -599,8 +627,11 @@ async function drawBeans() {
   const t = performance.now() / 1000, agit = Math.min(2, v.agitation) * (v.bean_location === 1 ? 1 : 0.1);
   v.beans.forEach((b, i) => {
     const [sx, sy, ph] = beanSeeds[i];
-    const x = 8 + (sx + Math.sin(t * 3.1 + ph) * 0.02 * agit) * (W - 16);
-    const y = 8 + (sy + Math.cos(t * 2.3 + ph) * 0.05 * agit) * (H - 16);
+    const [px, py] = v.air_pattern && v.bean_location === 1 ?
+      fluidBedBeanPosition(v.air_pattern, sx, sy, ph, t, v.agitation, v.mix_quality) :
+      [sx + Math.sin(t * 3.1 + ph) * 0.02 * agit, sy + Math.cos(t * 2.3 + ph) * 0.05 * agit];
+    const x = 8 + px * (W - 16);
+    const y = 8 + py * (H - 16);
     const r = b[3] * 0.7;
     g.fillStyle = `rgb(${b[0] * 255 | 0},${b[1] * 255 | 0},${b[2] * 255 | 0})`;
     g.beginPath(); g.ellipse(x, y, r, r * 0.68, ph, 0, 6.283); g.fill();
@@ -691,6 +722,18 @@ function presetSource(draft) {
   return draft.kind === 'roaster' && draft.mode === 'create' ? { roaster_type: draft.id } : { id: draft.id };
 }
 
+function addPresetChoiceDetail(select, options, fields) {
+  const detail = document.createElement('p');
+  detail.id = select.id + 'Detail';
+  detail.className = 'desc preset-type-detail';
+  const describe = () => { detail.textContent = options[select.selectedIndex]?.description || ''; };
+  select.setAttribute('aria-describedby', detail.id);
+  select.addEventListener('change', describe);
+  describe();
+  fields.append(detail);
+  return detail;
+}
+
 async function openPreset(kind, mode) {
   if (!state || $('presetDlg').open || (kind === 'roaster' && mode === 'edit' && !state.roaster.custom)) return;
   let options = [];
@@ -707,7 +750,7 @@ async function openPreset(kind, mode) {
     }
   }
   if (!id || $('presetDlg').open) return;
-  const draft = { kind, mode, id, options, loaded: '', form: null, page: mode === 'create' ? -1 : 0,
+  const draft = { kind, mode, id, options, airPattern: '', loaded: '', form: null, page: mode === 'create' ? -1 : 0,
                   changes: Object.create(null), inputs: [] };
   presetDraft = draft;
   $('presetTitle').textContent = `${mode === 'create' ? 'New' : 'Edit'} ${kind} preset`;
@@ -756,6 +799,7 @@ function renderPresetPage() {
     control.id = id;
     caption.htmlFor = id;
     fields.append(caption, control);
+    return caption;
   };
   if (onTemplate) {
     const roaster = draft.kind === 'roaster';
@@ -766,14 +810,24 @@ function renderPresetPage() {
     select.value = draft.id;
     addInput(roaster ? 'Machine type' : 'Template', select, 'presetTemplate');
     if (roaster) {
-      const detail = document.createElement('p');
-      detail.id = 'presetTypeDetail';
-      detail.className = 'desc preset-type-detail';
-      const describeType = () => { detail.textContent = draft.options[select.selectedIndex]?.description || ''; };
-      select.setAttribute('aria-describedby', detail.id);
-      select.addEventListener('change', describeType);
-      describeType();
-      fields.append(detail);
+      addPresetChoiceDetail(select, draft.options, fields);
+      let patternNodes = [];
+      const showAirPatterns = () => {
+        for (const node of patternNodes) node.remove();
+        patternNodes = [];
+        const options = draft.options[select.selectedIndex]?.air_patterns;
+        if (!options?.length) return;
+        const pattern = document.createElement('select');
+        pattern.replaceChildren(...options.map(x => new Option(x.name, x.id)));
+        pattern.value = options.some(x => x.id === draft.airPattern) ? draft.airPattern : options[0].id;
+        draft.airPattern = pattern.value;
+        pattern.addEventListener('change', () => { draft.airPattern = pattern.value; });
+        const caption = addInput('Air pattern', pattern, 'presetAirPattern');
+        const detail = addPresetChoiceDetail(pattern, options, fields);
+        patternNodes = [caption, pattern, detail];
+      };
+      select.addEventListener('change', showAirPatterns);
+      showAirPatterns();
     }
     $('presetContent').scrollTop = 0;
     select.focus();
@@ -797,13 +851,16 @@ function renderPresetPage() {
     tabs.append(tab);
   }
   for (const [i, field] of sections[draft.page].fields.entries()) {
-    const input = document.createElement('input');
-    input.required = field.key === 'name' || typeof field.value === 'number';
-    if (typeof field.value === 'number') {
+    const input = document.createElement(field.choices ? 'select' : 'input');
+    input.required = !!field.choices || field.key === 'name' || typeof field.value === 'number';
+    if (field.choices) {
+      input.replaceChildren(...field.choices.map(option => new Option(option.name, option.id)));
+    } else if (typeof field.value === 'number') {
       input.type = 'number'; input.min = field.min; input.max = field.max; input.step = field.whole ? 1 : 'any';
     } else input.maxLength = field.limit;
     input.value = draft.changes[field.key] ?? field.value;
     addInput(field.label, input, `presetField${i}`);
+    if (field.choices) addPresetChoiceDetail(input, field.choices, fields);
     draft.inputs.push([field, input]);
   }
   $('presetContent').scrollTop = 0;
@@ -814,7 +871,8 @@ function readPresetPage(validate = true) {
   const draft = presetDraft;
   for (const [field, input] of draft.inputs) {
     if (validate && (!input.validity.valid || (field.key === 'name' && !input.value.trim()))) {
-      $('presetError').textContent = field.key === 'name' ? 'Enter a preset name.' :
+      $('presetError').textContent = field.choices ? `Choose a valid ${field.label.toLowerCase()}.` :
+        field.key === 'name' ? 'Enter a preset name.' :
         `${field.label} must be ${field.whole ? 'a whole number ' : ''}between ${field.min} and ${field.max}.`;
       input.focus();
       return false;
@@ -841,6 +899,7 @@ $('presetForm').addEventListener('submit', async event => {
   if (!draft || draft.saving || $('presetNext').disabled) return;
   if (draft.page < 0) {
     draft.id = $('presetTemplate').value;
+    if ($('presetAirPattern')) draft.airPattern = $('presetAirPattern').value;
     if (draft.loaded === draft.id) { draft.page = 0; renderPresetPage(); }
     else await readPresetForm(draft);
     return;
@@ -851,8 +910,11 @@ $('presetForm').addEventListener('submit', async event => {
   }
   draft.saving = true;
   for (const control of $('presetForm').elements) control.disabled = true;
+  const changes = { ...draft.changes };
+  if (draft.mode === 'create' && draft.options.some(type => type.id === draft.id && type.air_patterns?.length))
+    changes['fluid_bed.air_pattern'] = draft.airPattern;
   const r = await send({ cmd: 'preset_save', mode: draft.mode, kind: draft.kind, ...presetSource(draft),
-                         revision: draft.form.revision, changes: draft.changes });
+                         revision: draft.form.revision, changes });
   if (!r.ok) {
     draft.saving = false;
     for (const control of $('presetForm').elements) control.disabled = false;

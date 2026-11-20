@@ -167,6 +167,46 @@ TEST(air_roaster_low_fan_stalls_bed) {
     CHECK(stalled);
 }
 
+TEST(fluid_bed_air_patterns_change_circulation) {
+    const auto& base = *catalog().roaster("air_roaster");
+    CHECK(base.fluid.air_pattern == FluidBedAirPattern::Upflow);
+    auto runPattern = [&](FluidBedAirPattern pattern, double fan, double batch) {
+        auto def = base;
+        def.fluid.air_pattern = pattern;
+        Simulation sim;
+        sim.setSeed(5);
+        sim.load(def, *catalog().bean("colombia_washed"));
+        sim.setPower(true, "test");
+        sim.setControl(Control::Fan, fan);
+        sim.setControl(Control::Heat, 80);
+        sim.step(15);
+        CHECK(sim.charge(batch, "test"));
+        sim.step(30);
+        CHECK(sim.visual().air_pattern == pattern);
+        return sim.snapshot();
+    };
+
+    const auto upflow = runPattern(FluidBedAirPattern::Upflow, 52, 150);
+    const auto spout = runPattern(FluidBedAirPattern::CentralSpout, 52, 150);
+    const auto swirl = runPattern(FluidBedAirPattern::TangentialSwirl, 52, 150);
+    const auto side = runPattern(FluidBedAirPattern::SideJet, 52, 150);
+    CHECK(spout.tele.mix_quality > side.tele.mix_quality);
+    CHECK(side.tele.mix_quality > upflow.tele.mix_quality);
+    CHECK(upflow.tele.mix_quality > swirl.tele.mix_quality);
+    CHECK(std::abs(spout.tele.airflow_kg_s - swirl.tele.airflow_kg_s) < 1e-12);
+    CHECK(std::abs(spout.beans.T_mean - swirl.beans.T_mean) > 0.1);
+
+    const auto lightSpout = runPattern(FluidBedAirPattern::CentralSpout, 100, 80);
+    const auto lightSwirl = runPattern(FluidBedAirPattern::TangentialSwirl, 100, 80);
+    CHECK((lightSpout.tele.alarms & AlarmBeansEjecting) != 0);
+    CHECK((lightSwirl.tele.alarms & AlarmBeansEjecting) == 0);
+
+    auto bad = base.raw;
+    bad["fluid_bed"]["air_pattern"] = "unknown";
+    RoasterDef rejected;
+    CHECK(!RoasterDef::fromJson(bad, rejected, nullptr));
+}
+
 TEST(fluid_bed_wall_heat_balances_during_fan_coastdown) {
     RoasterDef def = *catalog().roaster("air_roaster");
     def.fluid.wall_UA_in = 90;

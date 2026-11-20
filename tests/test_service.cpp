@@ -465,10 +465,19 @@ TEST(preset_creator_and_editor_persist) {
     const auto types = request(host, R"({"cmd":"preset_types"})");
     CHECK(types.getBool("ok", false));
     CHECK(types["types"].size() == 4);
+    for (const auto& type : types["types"].items()) {
+        if (type.get("id", "") == "fluid_bed") {
+            CHECK(type["air_patterns"].size() == 4);
+            CHECK(type["air_patterns"].at(0).get("id", "") == "upflow");
+        } else CHECK(!type.has("air_patterns"));
+    }
     for (const char* type : {"fluid_bed", "electric_drum", "gas_drum", "stir_pan"})
         CHECK(open(host, "roaster", "create", type).getBool("ok", false));
     auto form = open(host, "roaster", "create", "fluid_bed");
     CHECK(form.getBool("ok", false) && !form.getBool("custom", true));
+    for (const auto& section : form["sections"].items())
+        for (const auto& field : section["fields"].items())
+            CHECK(field.get("key", "") != "fluid_bed.air_pattern");
     auto createRoaster = prepare(form, "roaster", "create", "fluid_bed");
     auto& changes = createRoaster["changes"];
     changes["name"] = "My hot-air roaster";
@@ -480,6 +489,9 @@ TEST(preset_creator_and_editor_persist) {
     CHECK(!host.command(createRoaster, "test").getBool("ok", true));
     changes["controls.heat.levels"] = 8;
     changes["controls.fan.levels"] = 8;
+    changes["fluid_bed.air_pattern"] = "unknown";
+    CHECK(!host.command(createRoaster, "test").getBool("ok", true));
+    changes["fluid_bed.air_pattern"] = "tangential_swirl";
     auto savedRoaster = host.command(createRoaster, "test");
     CHECK(savedRoaster.getBool("ok", false));
     const auto roasterId = savedRoaster.get("id", "");
@@ -488,9 +500,20 @@ TEST(preset_creator_and_editor_persist) {
     CHECK(host.snapshot().env.line_voltage == 230);
     const auto customRoaster = open(host, "roaster", "edit", roasterId);
     CHECK(customRoaster.getBool("custom", false));
+    bool foundPattern = false;
+    for (const auto& section : customRoaster["sections"].items()) {
+        for (const auto& field : section["fields"].items()) {
+            if (field.get("key", "") != "fluid_bed.air_pattern") continue;
+            foundPattern = true;
+            CHECK(field.get("value", "") == "tangential_swirl");
+            CHECK(field["choices"].size() == 4);
+        }
+    }
+    CHECK(foundPattern);
     auto editRoaster = prepare(customRoaster, "roaster", "edit", roasterId);
     editRoaster["changes"]["probes.BT.offset"] = 2.5;
     editRoaster["changes"]["controls.fan.levels"] = 10;
+    editRoaster["changes"]["fluid_bed.air_pattern"] = "side_jet";
     CHECK(host.command(editRoaster, "test").get("id", "") == roasterId);
 
     auto beanForm = open(host, "bean", "edit", cfg.bean);
@@ -525,6 +548,9 @@ TEST(preset_creator_and_editor_persist) {
     CHECK(restarted.snapshot().env.line_voltage == 240);
     const auto roaster = restarted.roasterDef();
     CHECK(roaster.batch.default_g == 200);
+    CHECK(roaster.fluid.air_pattern == FluidBedAirPattern::SideJet);
+    CHECK(restarted.stateJson(true)["roaster_def"]["fluid_bed"].get("air_pattern", "") == "side_jet");
+    CHECK(request(restarted, R"({"cmd":"visual"})").get("air_pattern", "") == "side_jet");
     CHECK(roaster.probes[static_cast<std::size_t>(roaster.probeIndex("BT"))].offset == 2.5);
     const auto* heat = roaster.control(Control::Heat);
     const auto* fan = roaster.control(Control::Fan);
