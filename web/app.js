@@ -23,8 +23,9 @@ let volume = 75;           // percent
 let preheatC = 200;        // preheat target, kept in C
 let serverInfo = null;
 
-// The graph covers one session: it starts when the machine is switched on and
-// ends with the roast report (COOL), when the machine switches off again.
+// The graph covers one session: it starts when the machine is switched on (or
+// at CHARGE, if beans go into a machine that is still off) and ends with the
+// roast report (COOL), when the machine switches off again.
 // Session-clock seconds; start < 0 = not started, end < 0 = still recording.
 let graph = { start: -1, end: -1 };
 // Events up to this sequence number were replayed on connect: they rebuild the
@@ -177,6 +178,9 @@ function onEvent(e) {
   // current one (a mid-roast power cut keeps the graph going).
   if (type === 'NOTE' && e.detail === 'power on' &&
       (graph.start < 0 || graph.end >= 0 || eventTime('CHARGE') < 0)) startGraph(e.t);
+  // Charging a machine that is still switched off starts the graph at CHARGE,
+  // so switching on afterwards continues that roast.
+  if (type === 'CHARGE' && (graph.start < 0 || graph.end >= 0)) startGraph(e.t);
   if (graph.start < 0 || e.t < graph.start - 0.5 || graph.end >= 0) return;  // not part of this graph
   if (type === 'CHARGE') events = [];
   events.push(e);

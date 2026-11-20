@@ -165,10 +165,11 @@ struct App {
 
     rs_state st{};
     // The graph covers one session: it starts when the machine is switched on
-    // and ends with the roast report (COOL), when the machine switches off.
+    // (or at CHARGE, if beans go into a machine that is still off) and ends
+    // with the roast report (COOL), when the machine switches off. Start and
+    // end come from the simulator's own event times, not from when we notice.
     // Session-clock seconds; graphStart < 0 = not started, graphEnd < 0 = still recording.
     double graphStart = -1, graphEnd = -1;
-    bool wasPowered = false;
     std::string unitKey;         // detects unit changes made anywhere (menu, web UI, Artisan TC4)
     double preheatC = 200;       // preheat target, kept in C
     bool unitsShown = false;
@@ -460,7 +461,16 @@ void reloadHistory() {
     g.events.clear();
     g.eventSeq = 0;
     g.graphStart = g.graphEnd = -1;
-    g.wasPowered = false;
+}
+
+// Begins a new graph at session time t (-1 = none until the machine is on).
+void startGraph(double t) {
+    g.graphStart = t;
+    g.graphEnd = -1;
+    g.events.clear();
+    if (t < 0) return;
+    auto keep = std::find_if(g.hist.begin(), g.hist.end(), [t](const rs_sample& s) { return s.t >= t - 1.0; });
+    g.hist.erase(g.hist.begin(), keep);  // samples of earlier graphs
 }
 
 void invalidateRight() {
@@ -759,20 +769,7 @@ void refresh() {
         g.hist.clear();
         g.histNext = 0;
         g.graphStart = g.graphEnd = -1;
-        g.wasPowered = false;  // still powered -> a new graph starts just below
     }
-    // A new graph starts at power-on unless a roast is in progress on the
-    // current one (a mid-roast power cut keeps the graph going).
-    if (g.st.powered && !g.wasPowered &&
-        (g.graphStart < 0 || g.graphEnd >= 0 || eventTime("CHARGE") < 0)) {
-        g.graphStart = g.st.t_session;
-        g.graphEnd = -1;
-        g.events.clear();
-        auto keep = std::find_if(g.hist.begin(), g.hist.end(),
-                                 [](const rs_sample& s) { return s.t >= g.graphStart - 1.0; });
-        g.hist.erase(g.hist.begin(), keep);  // samples of earlier graphs
-    }
-    g.wasPowered = g.st.powered != 0;
     rs_sample buf[512];
     uint64_t next = g.histNext;
     for (;;) {
@@ -793,15 +790,20 @@ void refresh() {
             double t = e.get("t", 0.0);
             // A cold reset or roaster load (from any front end) wipes the
             // simulator's history: start a new graph if the machine is on.
-            if (type == "NOTE" && e.get("detail", "") == "cold reset") {
-                if (g.graphStart < 0 || t > g.graphStart) {
-                    g.events.clear();
-                    g.graphStart = g.st.powered ? t : -1;
-                    g.graphEnd = -1;
-                    g.wasPowered = g.st.powered != 0;
-                }
+            std::string detail = e.get("detail", "");
+            if (type == "NOTE" && detail == "cold reset") {
+                if (g.graphStart < 0 || t > g.graphStart) startGraph(g.st.powered ? t : -1);
                 continue;
             }
+            // Switching on starts a new graph at the moment of the switch,
+            // unless a roast is in progress on the current one (a mid-roast
+            // power cut keeps the graph going).
+            if (type == "NOTE" && detail == "power on" &&
+                (g.graphStart < 0 || g.graphEnd >= 0 || eventTime("CHARGE") < 0))
+                startGraph(t);
+            // Charging a machine that is still switched off starts the graph
+            // at CHARGE, so switching on afterwards continues that roast.
+            if (type == "CHARGE" && (g.graphStart < 0 || g.graphEnd >= 0)) startGraph(t);
             // Only events of the current graph (a refetch can replay older ones).
             if (g.graphStart < 0 || t < g.graphStart || g.graphEnd >= 0) continue;
             if (type == "CHARGE") g.events.clear();
@@ -814,6 +816,9 @@ void refresh() {
         }
         g.eventSeq = g.st.event_seq;
     }
+    // Machine on but no graph (switched on before the last cold reset, or
+    // before this window opened): the graph starts with the oldest sample.
+    if (g.st.powered && g.graphStart < 0) startGraph(g.hist.empty() ? g.st.t_session : g.hist.front().t);
 
     syncSliders();
     updatePhases();
