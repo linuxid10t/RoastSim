@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -49,7 +50,7 @@ namespace {
 // ---------------------------------------------------------------- ids
 enum : int {
     IDC_ROASTER = 101, IDC_BEAN, IDC_BATCH, IDC_BATCHUNIT, IDC_CHARGE, IDC_DROP, IDC_MARKFC, IDC_POWER, IDC_COOL,
-    IDC_READOUT, IDC_STATUSBAR, IDC_DESC,
+    IDC_READOUT, IDC_STATUSBAR, IDC_DESC, IDC_PHASES,
     IDC_SLIDER0 = 200, IDC_SLABEL0 = 220, IDC_SVALUE0 = 240,
     IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY, IDM_REPORT,
     IDM_MARK_DRY = 1020, IDM_MARK_FCS, IDM_MARK_FCE, IDM_MARK_SCS, IDM_MARK_SCE,
@@ -117,17 +118,31 @@ std::wstring mmss(double s) {
 struct EventMark {
     std::string type, detail;
     double t_roast, t;
+    double bt;  // C at the event, -1 if the probe was open
 };
+
+// Roast phases shown in the progress panel and as a band on the graph.
+constexpr int kPhaseCount = 3;
+const wchar_t* const kPhaseNames[kPhaseCount] = {L"Drying", L"Maillard", L"Development"};
+const COLORREF kPhaseColors[kPhaseCount] = {RGB(118, 168, 82), RGB(220, 150, 50), RGB(150, 92, 52)};
+
+// Events the Mark button steps through, in roast order.
+constexpr int kMarkCount = 5;
+const char* const kMarkEvents[kMarkCount] = {"DRY", "FCs", "FCe", "SCs", "SCe"};
+const wchar_t* const kMarkLabels[kMarkCount] = {L"Mark DRY", L"Mark FC start", L"Mark FC end", L"Mark SC start",
+                                                L"Mark SC end"};
 
 struct App {
     HINSTANCE inst = nullptr;
     HWND wnd = nullptr;
     rs_host* host = nullptr;
-    HFONT font = nullptr, mono = nullptr, small = nullptr, heading = nullptr;
+    HFONT font = nullptr, mono = nullptr, small = nullptr, heading = nullptr, big = nullptr;
     double dpi = 1.0;
     HACCEL accel = nullptr;
 
-    HWND roasterCombo, beanCombo, batchEdit, batchUnit, readout, statusBar, desc;
+    HWND roasterCombo, beanCombo, batchEdit, batchUnit, readout, statusBar, desc, phasesPanel, markButton;
+    std::wstring phasesKey;  // last painted progress-panel content
+    int nextMark = -1;       // index into kMarkEvents the Mark button sends, -1 = none
     HWND coolCheck, powerCheck;
     HWND sliders[kSliderCount], sliderLabels[kSliderCount], sliderValues[kSliderCount];
     bool dragging[kSliderCount] = {};
@@ -271,6 +286,157 @@ void setReadout(const std::wstring& text) {
     InvalidateRect(g.readout, nullptr, FALSE);
 }
 
+// ---------------------------------------------------------------- roast progress
+// Roast time of the first event of a type in the current roast, -1 if none yet.
+double eventTime(const char* type) {
+    for (const auto& e : g.events)
+        if (e.type == type) return e.t_roast;
+    return -1;
+}
+
+// Everything the progress panel shows, worked out from the roast's events.
+// After DROP the numbers freeze at the drop.
+struct PhaseView {
+    bool roast = false;          // beans charged in this roast
+    bool dropped = false;
+    double end = 0;              // roast time now, or at DROP
+    double start[kPhaseCount] = {-1, -1, -1};  // phase start (roast s), -1 = not reached
+    double dur[kPhaseCount] = {-1, -1, -1};
+    int active = -1;             // phase in progress, -1 when none (before charge / after drop)
+    const wchar_t* sinceName = L"dry end";
+    double since = -1;           // seconds since the latest of TP/DRY/FCs/SCs
+    int sinceIdx = -1;           // which of them, for the colour
+};
+
+PhaseView phaseView() {
+    PhaseView v;
+    if (g.st.t_roast < 0 || eventTime("CHARGE") < 0) return v;
+    v.roast = true;
+    double drop = eventTime("DROP");
+    v.dropped = drop >= 0;
+    v.end = v.dropped ? drop : g.st.t_roast;
+    double dry = eventTime("DRY"), fcs = eventTime("FCs");
+    v.start[0] = 0;
+    v.start[1] = dry;
+    v.start[2] = fcs >= 0 && dry >= 0 ? fcs : -1;
+    for (int i = 0; i < kPhaseCount; ++i) {
+        if (v.start[i] < 0) continue;
+        double next = i + 1 < kPhaseCount && v.start[i + 1] >= 0 ? v.start[i + 1] : v.end;
+        v.dur[i] = std::max(0.0, next - v.start[i]);
+        if (!v.dropped) v.active = i;
+    }
+    // The newest event wins: second crack replaces first crack, and so on.
+    const struct { const char* type; const wchar_t* name; int phase; } steps[] = {
+        {"TP", L"turning point", 0}, {"DRY", L"dry end", 1}, {"FCs", L"first crack", 2}, {"SCs", L"second crack", 2}};
+    for (const auto& s : steps) {
+        double t = eventTime(s.type);
+        if (t < 0 || t > v.end) continue;
+        v.since = v.end - t;
+        v.sinceName = s.name;
+        v.sinceIdx = s.phase;
+    }
+    return v;
+}
+
+std::wstring pctText(const PhaseView& v, int i) {
+    return v.dur[i] >= 0 && v.end > 0 ? fmt(L"%.0f%%", v.dur[i] / v.end * 100.0) : std::wstring();
+}
+
+void drawText(HDC dc, HFONT f, COLORREF c, int x, int y, const std::wstring& s) {
+    SelectObject(dc, f);
+    SetTextColor(dc, c);
+    TextOutW(dc, x, y, s.c_str(), static_cast<int>(s.size()));
+}
+
+int textWidth(HDC dc, HFONT f, const std::wstring& s) {
+    SelectObject(dc, f);
+    SIZE sz{};
+    GetTextExtentPoint32W(dc, s.c_str(), static_cast<int>(s.size()), &sz);
+    return sz.cx;
+}
+
+void paintPhases(HDC dc, RECT rc) {
+    FillRect(dc, &rc, GetSysColorBrush(COLOR_WINDOW));
+    FrameRect(dc, &rc, GetSysColorBrush(COLOR_3DSHADOW));
+    SetBkMode(dc, TRANSPARENT);
+    const PhaseView v = phaseView();
+    const COLORREF text = GetSysColor(COLOR_WINDOWTEXT), grey = RGB(128, 122, 115);
+    const int pad = S(10), w = rc.right - rc.left, half = w / 2;
+
+    // Top: roast time and time since the latest event, both large.
+    drawText(dc, g.small, grey, pad, S(6), v.dropped ? L"Roast time (dropped)" : L"Roast time");
+    drawText(dc, g.big, text, pad, S(20), v.roast ? mmss(v.end) : L"--:--");
+    std::wstring cap = std::wstring(L"Since ") + v.sinceName + (v.dropped && v.since >= 0 ? L" (to drop)" : L"");
+    drawText(dc, g.small, grey, half, S(6), cap);
+    COLORREF sinceColor = v.sinceIdx >= 0 ? kPhaseColors[v.sinceIdx] : grey;
+    drawText(dc, g.big, v.since >= 0 ? sinceColor : grey, half, S(20), v.since >= 0 ? mmss(v.since) : L"--:--");
+
+    // Bottom: one cell per phase with a colour bar, duration and share of the roast.
+    const int top = S(64), cellW = (w - 2 * pad) / kPhaseCount;
+    for (int i = 0; i < kPhaseCount; ++i) {
+        int x = pad + i * cellW;
+        bool reached = v.dur[i] >= 0;
+        HBRUSH br = CreateSolidBrush(reached ? kPhaseColors[i] : RGB(225, 222, 215));
+        RECT bar{x, top, x + cellW - S(8), top + (i == v.active ? S(5) : S(3))};
+        FillRect(dc, &bar, br);
+        DeleteObject(br);
+        drawText(dc, g.small, i == v.active ? text : grey, x, top + S(8), kPhaseNames[i]);
+        std::wstring d = reached ? mmss(v.dur[i]) : L"--:--";
+        drawText(dc, g.heading, reached ? text : grey, x, top + S(24), d);
+        if (reached)
+            drawText(dc, g.font, grey, x + textWidth(dc, g.heading, d) + S(6), top + S(24), pctText(v, i));
+    }
+}
+
+LRESULT CALLBACK phasesProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(h, &ps);
+            RECT rc;
+            GetClientRect(h, &rc);
+            HDC mem = CreateCompatibleDC(dc);
+            HBITMAP bmp = CreateCompatibleBitmap(dc, std::max(1L, rc.right), std::max(1L, rc.bottom));
+            HGDIOBJ oldBmp = SelectObject(mem, bmp);
+            HGDIOBJ oldFont = SelectObject(mem, g.font);
+            paintPhases(mem, rc);
+            BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+            SelectObject(mem, oldFont);
+            SelectObject(mem, oldBmp);
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            EndPaint(h, &ps);
+            return 0;
+        }
+    }
+    return DefWindowProcW(h, msg, wp, lp);
+}
+
+// Repaints the panel only when something it shows has changed.
+void updatePhases() {
+    PhaseView v = phaseView();
+    std::wstring key = fmt(L"%d%d%d%d|%s|%s|", v.roast, v.dropped, v.active, v.sinceIdx, mmss(v.end).c_str(),
+                           mmss(v.since).c_str()) + v.sinceName;
+    for (int i = 0; i < kPhaseCount; ++i) key += L"|" + mmss(v.dur[i]) + pctText(v, i);
+    if (key == g.phasesKey) return;
+    g.phasesKey = key;
+    InvalidateRect(g.phasesPanel, nullptr, FALSE);
+}
+
+// The Mark button always offers the next event of the roast not yet marked
+// (by you, Artisan or the simulator's own detection).
+void updateMarkButton() {
+    int next = -1;
+    for (int i = 0; i < kMarkCount && next < 0; ++i)
+        if (eventTime(kMarkEvents[i]) < 0) next = i;
+    bool roasting = g.st.phase == RS_PHASE_ROASTING;
+    setText(g.markButton, next >= 0 ? kMarkLabels[next] : L"All marked");
+    bool enable = roasting && next >= 0;
+    if ((IsWindowEnabled(g.markButton) != 0) != enable) EnableWindow(g.markButton, enable);
+    g.nextMark = roasting ? next : -1;
+}
+
 void setStatus(int part, const std::wstring& text) {
     if (g.statusText[part] == text) return;
     g.statusText[part] = text;
@@ -383,6 +549,13 @@ void updateMenus() {
     CheckMenuRadioItem(m, IDM_VOL0, IDM_VOL0 + kVolumeCount - 1, IDM_VOL0 + vi, MF_BYCOMMAND);
     CheckMenuItem(m, IDM_SOUND, MF_BYCOMMAND | (g.soundOn ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m, IDM_POWER, MF_BYCOMMAND | (g.st.powered ? MF_CHECKED : MF_UNCHECKED));
+    // Each event can be marked once per roast; marked ones show a check.
+    for (int i = 0; i < kMarkCount; ++i) {
+        bool done = eventTime(kMarkEvents[i]) >= 0;
+        CheckMenuItem(m, IDM_MARK_DRY + i, MF_BYCOMMAND | (done ? MF_CHECKED : MF_UNCHECKED));
+        EnableMenuItem(m, IDM_MARK_DRY + i,
+                       MF_BYCOMMAND | (!done && g.st.phase == RS_PHASE_ROASTING ? MF_ENABLED : MF_GRAYED));
+    }
     auto relabel = [&](int id, const std::wstring& text) {
         ModifyMenuW(m, id, MF_BYCOMMAND | MF_STRING, id, text.c_str());
     };
@@ -445,6 +618,10 @@ void layout() {
     place(g.powerCheck, pad, y, S(110), rowH);
     place(g.coolCheck, pad + S(120), y, w - S(120), rowH);
     y += rowH + gap;
+
+    heading(L"Roast progress");
+    place(g.phasesPanel, pad, y, w, S(118));
+    y += S(118) + gap * 2;
 
     bool anySlider = false;
     for (int i = 0; i < kSliderCount; ++i) anySlider |= IsWindowVisible(g.sliders[i]) != 0;
@@ -519,10 +696,9 @@ void showReport() {
 
 std::wstring buildReadout() {
     const rs_state& s = g.st;
-    const wchar_t* phases[] = {L"idle (empty)", L"ROASTING", L"cooling", L"done"};
+    // Roast time and phase are in the progress panel and status bar.
     const wchar_t* tu = TU();
     std::wstring r;
-    r += fmt(L"Roast time  %s    %s\r\n", mmss(s.t_roast).c_str(), phases[std::clamp(s.phase, 0, 3)]);
     r += L"BT " + probeText(s.bt) + L" " + tu + fmt(L"   RoR %6.1f %s/min\r\n", R(s.ror_bt), tu);
     r += L"ET " + probeText(s.et) + L" " + tu + fmt(L"   RoR %6.1f %s/min\r\n", R(s.ror_et), tu);
     r += L"\r\n";
@@ -590,13 +766,15 @@ void refresh() {
         for (const auto& e : r["events"].items()) {
             std::string type = e.get("type", "");
             if (type == "CHARGE") g.events.clear();
-            g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), e.get("t", 0.0)});
+            g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), e.get("t", 0.0), e.get("bt", -1.0)});
             if (type == "COOL") PostMessageW(g.wnd, WM_COMMAND, IDM_REPORT, 0);
         }
         g.eventSeq = g.st.event_seq;
     }
 
     syncSliders();
+    updatePhases();
+    updateMarkButton();
     setReadout(buildReadout());
 
     const wchar_t* phases[] = {L"empty", L"roasting", L"cooling", L"done"};
@@ -717,19 +895,53 @@ void paintGraph(HDC dc, RECT area) {
         series(RGB(150, 120, 90), 1, [](const rs_sample& s) { return s.t_roast >= 0 ? static_cast<double>(s.bean_true) : -1.0; }, false);
     }
 
+    // Phase band along the top of the plot: drying, Maillard, development.
+    const PhaseView pv = phaseView();
+    if (roast && pv.roast) {
+        for (int i = 0; i < kPhaseCount; ++i) {
+            if (pv.dur[i] < 0) continue;
+            int a = std::max(l, X(pv.start[i])), z = std::min(r, X(pv.start[i] + pv.dur[i]));
+            if (z <= a) continue;
+            HBRUSH br = CreateSolidBrush(kPhaseColors[i]);
+            RECT band{a, t, z, t + S(5)};
+            FillRect(dc, &band, br);
+            DeleteObject(br);
+        }
+    }
+
+    // Event lines, each labelled with its roast time and BT so nothing has to
+    // be read off the axes. Labels go in the first row where they don't
+    // overlap the previous label.
     HPEN ev = CreatePen(PS_DOT, 1, RGB(90, 80, 70));
     oldPen = SelectObject(dc, ev);
-    SetTextColor(dc, RGB(60, 50, 40));
-    int labelRow = 0;
+    constexpr int kRows = 4;
+    int rowEnd[kRows];
+    std::fill(rowEnd, rowEnd + kRows, INT_MIN);
+    HBRUSH labelBg = CreateSolidBrush(RGB(250, 249, 246));
     for (const auto& e : g.events) {
         if (e.type == "ALARM" || e.type == "NOTE") continue;
         double x = roast ? e.t_roast : e.t;
         if (x < x0 || x > x1) continue;
-        MoveToEx(dc, X(x), t, nullptr);
-        LineTo(dc, X(x), b);
-        std::wstring s = widen(e.type);
-        TextOutW(dc, X(x) + S(3), t + S(2) + (labelRow++ % 2) * S(14), s.c_str(), static_cast<int>(s.size()));
+        int px = X(x);
+        MoveToEx(dc, px, t + S(5), nullptr);
+        LineTo(dc, px, b);
+        std::wstring name = widen(e.type), detail = mmss(roast ? e.t_roast : e.t);
+        if (e.bt != -1.0 && e.type != "COOL") detail += fmt(L"  %.0f%s", T(e.bt), TU());
+        int nameW = textWidth(dc, g.heading, name), w = nameW + S(4) + textWidth(dc, g.small, detail);
+        int row = 0;
+        for (int i = 0; i < kRows; ++i)
+            if (rowEnd[i] < px) { row = i; break; } else if (rowEnd[i] < rowEnd[row]) row = i;
+        // Keep labels near the right edge inside the plot.
+        int lx = std::min(px + S(4), r - w - S(2));
+        int ly = t + S(9) + row * S(17);
+        RECT bgr{lx - S(2), ly, lx + w + S(2), ly + S(16)};
+        FillRect(dc, &bgr, labelBg);
+        drawText(dc, g.heading, RGB(60, 50, 40), lx, ly, name);
+        drawText(dc, g.small, RGB(95, 88, 80), lx + nameW + S(4), ly + S(1), detail);
+        rowEnd[row] = lx + w + S(6);
     }
+    DeleteObject(labelBg);
+    SelectObject(dc, g.small);
     SelectObject(dc, oldPen);
     DeleteObject(ev);
 
@@ -1085,11 +1297,13 @@ void onCommand(int id, int code) {
         case IDM_EMPTY: showError(cmd1("empty")); break;
         case IDC_MARKFC:
         case IDM_MARK_DRY: case IDM_MARK_FCS: case IDM_MARK_FCE: case IDM_MARK_SCS: case IDM_MARK_SCE: {
-            const char* names[] = {"DRY", "FCs", "FCe", "SCs", "SCe"};
+            int idx = id == IDC_MARKFC ? g.nextMark : id - IDM_MARK_DRY;
+            if (idx < 0) break;
             Value c = Value::object();
             c["cmd"] = "mark";
-            c["event"] = id == IDC_MARKFC ? "FCs" : names[id - IDM_MARK_DRY];
+            c["event"] = kMarkEvents[idx];
             command(c);
+            refresh();  // advance the button right away
             break;
         }
         case IDM_REPORT: showReport(); break;
@@ -1209,7 +1423,8 @@ void createWidgets() {
     g.batchUnit = mk(L"STATIC", L"g", SS_LEFT, IDC_BATCHUNIT);
     mk(L"BUTTON", L"Charge", BS_PUSHBUTTON | WS_TABSTOP, IDC_CHARGE);
     mk(L"BUTTON", L"Drop", BS_PUSHBUTTON | WS_TABSTOP, IDC_DROP);
-    mk(L"BUTTON", L"Mark FC", BS_PUSHBUTTON | WS_TABSTOP, IDC_MARKFC);
+    g.markButton = mk(L"BUTTON", kMarkLabels[0], BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, IDC_MARKFC);
+    g.phasesPanel = mk(L"RoastSimPhases", L"", 0, IDC_PHASES);
     g.powerCheck = mk(L"BUTTON", L"Power", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_POWER);
     g.coolCheck = mk(L"BUTTON", L"Cooling tray fan", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_COOL);
     for (int i = 0; i < kSliderCount; ++i) {
@@ -1383,6 +1598,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     LOGFONTW hd = ncm.lfMessageFont;
     hd.lfWeight = FW_SEMIBOLD;
     g.heading = CreateFontIndirectW(&hd);
+    LOGFONTW bg = ncm.lfMessageFont;
+    bg.lfHeight = -S(30);
+    bg.lfWeight = FW_SEMIBOLD;
+    g.big = CreateFontIndirectW(&bg);
     g.mono = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
 
     // roastsim.json next to the exe configures ports, bind address, units...;
@@ -1411,6 +1630,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     rc.hInstance = inst;
     rc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     rc.lpszClassName = L"RoastSimReadout";
+    RegisterClassExW(&rc);
+    rc.lpfnWndProc = phasesProc;
+    rc.lpszClassName = L"RoastSimPhases";
     RegisterClassExW(&rc);
 
     WNDCLASSEXW wc{};
