@@ -63,6 +63,7 @@ enum : int {
     IDM_SOUND = 1220, IDM_VOL0,  // + index into kVolumes
 };
 enum : UINT_PTR { TIMER_UI = 1 };
+constexpr UINT WM_APP_ROAST_DONE = WM_APP + 1;  // posted when COOL arrives: power off, show report
 
 constexpr int kSliderCount = 5;  // heat, fan, drum, stir, voltage
 const int kSliderControls[kSliderCount] = {RS_CTL_HEAT, RS_CTL_FAN, RS_CTL_DRUM, RS_CTL_STIR, RS_CTL_VOLTAGE};
@@ -163,6 +164,11 @@ struct App {
     std::string currentRoaster;
 
     rs_state st{};
+    // The graph covers one session: it starts when the machine is switched on
+    // and ends with the roast report (COOL), when the machine switches off.
+    // Session-clock seconds; graphStart < 0 = not started, graphEnd < 0 = still recording.
+    double graphStart = -1, graphEnd = -1;
+    bool wasPowered = false;
     std::string unitKey;         // detects unit changes made anywhere (menu, web UI, Artisan TC4)
     double preheatC = 200;       // preheat target, kept in C
     bool unitsShown = false;
@@ -310,9 +316,11 @@ struct PhaseView {
 
 PhaseView phaseView() {
     PhaseView v;
-    if (g.st.t_roast < 0 || eventTime("CHARGE") < 0) return v;
-    v.roast = true;
+    // Events belong to the current graph, so a finished roast stays on show
+    // until the machine is switched on again.
     double drop = eventTime("DROP");
+    if (eventTime("CHARGE") < 0 || (drop < 0 && g.st.t_roast < 0)) return v;
+    v.roast = true;
     v.dropped = drop >= 0;
     v.end = v.dropped ? drop : g.st.t_roast;
     double dry = eventTime("DRY"), fcs = eventTime("FCs");
@@ -444,11 +452,15 @@ void setStatus(int part, const std::wstring& text) {
 }
 
 // ---------------------------------------------------------------- roaster setup
+// After a cold reset or roaster load (both clear the simulator's history):
+// drop the graph; the next refresh starts a new one if the machine is on.
 void reloadHistory() {
     g.hist.clear();
     g.histNext = 0;
     g.events.clear();
     g.eventSeq = 0;
+    g.graphStart = g.graphEnd = -1;
+    g.wasPowered = false;
 }
 
 void invalidateRight() {
@@ -740,14 +752,27 @@ void refresh() {
         g.unitsShown = true;
         applyUnits();
     }
-    // History: reload when a roast starts or history was trimmed.
-    if (g.st.phase != g.lastPhase || g.st.history_end < g.histNext) {
-        if ((g.lastPhase != RS_PHASE_ROASTING && g.st.phase == RS_PHASE_ROASTING) || g.st.history_end < g.histNext) {
-            g.hist.clear();
-            g.histNext = 0;
-        }
-        g.lastPhase = g.st.phase;
+    // History: the shell keeps its own copy of every sample since power-on (the
+    // simulator trims pre-charge history at CHARGE). Reload only when the
+    // simulator's history was cleared (cold reset or roaster load, from any front end).
+    if (g.st.history_end < g.histNext) {
+        g.hist.clear();
+        g.histNext = 0;
+        g.graphStart = g.graphEnd = -1;
+        g.wasPowered = false;  // still powered -> a new graph starts just below
     }
+    // A new graph starts at power-on unless a roast is in progress on the
+    // current one (a mid-roast power cut keeps the graph going).
+    if (g.st.powered && !g.wasPowered &&
+        (g.graphStart < 0 || g.graphEnd >= 0 || eventTime("CHARGE") < 0)) {
+        g.graphStart = g.st.t_session;
+        g.graphEnd = -1;
+        g.events.clear();
+        auto keep = std::find_if(g.hist.begin(), g.hist.end(),
+                                 [](const rs_sample& s) { return s.t >= g.graphStart - 1.0; });
+        g.hist.erase(g.hist.begin(), keep);  // samples of earlier graphs
+    }
+    g.wasPowered = g.st.powered != 0;
     rs_sample buf[512];
     uint64_t next = g.histNext;
     for (;;) {
@@ -765,9 +790,16 @@ void refresh() {
         Value r = command(c);
         for (const auto& e : r["events"].items()) {
             std::string type = e.get("type", "");
+            double t = e.get("t", 0.0);
+            // Only events of the current graph (a refetch can replay older ones).
+            if (g.graphStart < 0 || t < g.graphStart || g.graphEnd >= 0) continue;
             if (type == "CHARGE") g.events.clear();
-            g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), e.get("t", 0.0), e.get("bt", -1.0)});
-            if (type == "COOL") PostMessageW(g.wnd, WM_COMMAND, IDM_REPORT, 0);
+            g.events.push_back({type, e.get("detail", ""), e.get("t_roast", -1.0), t, e.get("bt", -1.0)});
+            if (type == "COOL") {
+                // The roast is over: freeze the graph here, then power off and report.
+                g.graphEnd = t;
+                PostMessageW(g.wnd, WM_APP_ROAST_DONE, 0, 0);
+            }
         }
         g.eventSeq = g.st.event_seq;
     }
@@ -815,20 +847,30 @@ void paintGraph(HDC dc, RECT area) {
 
     const int l = area.left + S(48), r = area.right - S(52), t = area.top + S(26), b = area.bottom - S(26);
     if (r <= l + 20 || b <= t + 20) return;
-    bool roast = g.st.t_roast >= 0;
-    double x0, x1;
-    auto tx = [&](const rs_sample& s) { return roast ? static_cast<double>(s.t_roast) : static_cast<double>(s.t); };
+    // The graph runs from power-on (graphStart) to the roast report (graphEnd).
+    // Before CHARGE the axis is time since power-on; from CHARGE on it is roast
+    // time, with the pre-charge part (preheat) at negative times.
+    const bool started = g.graphStart >= 0;
+    const double tEnd = g.graphEnd >= 0 ? g.graphEnd : g.st.t_session;  // session clock
+    double chargeAt = -1;  // session time of CHARGE in this graph
+    for (const auto& e : g.events)
+        if (e.type == "CHARGE") chargeAt = e.t;
+    const bool roast = started && chargeAt >= 0;
+    const double origin = roast ? chargeAt : g.graphStart;
+    auto inGraph = [&](double ts) { return started && ts >= g.graphStart - 0.5 && ts <= tEnd + 0.5; };
+    auto tx = [&](const rs_sample& s) { return static_cast<double>(s.t) - origin; };
+    double x0 = 0, x1 = 5 * 60.0;
     if (roast) {
-        x0 = -60;
-        x1 = std::max(12.0 * 60.0, std::ceil((g.st.t_roast + 60) / 120.0) * 120.0);
-    } else {
-        x1 = std::max(60.0, g.st.t_session);
-        x0 = std::max(0.0, x1 - 600.0);
+        x0 = std::min(0.0, std::floor((g.graphStart - chargeAt) / 30.0) * 30.0);
+        x1 = std::max(12.0 * 60.0, std::ceil((tEnd - chargeAt + 60) / 120.0) * 120.0);
+    } else if (started) {
+        x1 = std::max(x1, std::ceil((tEnd - g.graphStart + 30) / 60.0) * 60.0);
     }
     // Axes in display units: C 0-250 by 50 / F 0-500 by 100; RoR 0-50 C/min / 0-90 F/min.
     const double tStep = isF() ? 100.0 : 50.0, rorMax = isF() ? 90.0 : 50.0, rorStep = isF() ? 15.0 : 10.0;
     double tMax = isF() ? 500.0 : 250.0;
-    for (const auto& s : g.hist) tMax = std::max<double>(tMax, std::max(T(s.bt), T(s.et)) + 10);
+    for (const auto& s : g.hist)
+        if (inGraph(s.t)) tMax = std::max<double>(tMax, std::max(T(s.bt), T(s.et)) + 10);
     tMax = std::ceil(tMax / tStep) * tStep;
     auto X = [&](double x) { return l + static_cast<int>((x - x0) / (x1 - x0) * (r - l)); };
     auto Y = [&](double v) { return b - static_cast<int>(v / tMax * (b - t)); };
@@ -850,21 +892,30 @@ void paintGraph(HDC dc, RECT area) {
     TextOutW(dc, area.left + S(8), t - S(18), TU(), static_cast<int>(wcslen(TU())));
     std::wstring rorUnit = std::wstring(TU()) + L"/min";
     TextOutW(dc, r - S(4), t - S(18), rorUnit.c_str(), static_cast<int>(rorUnit.size()));
-    double step = (x1 - x0) > 900 ? 120 : 60;
+    // Time grid: the smallest step that keeps the labels from crowding.
+    double step = 600;
+    for (double s : {30.0, 60.0, 120.0, 300.0})
+        if ((x1 - x0) / s <= (r - l) / S(50)) { step = s; break; }
     for (double x = std::ceil(x0 / step) * step; x <= x1; x += step) {
         MoveToEx(dc, X(x), t, nullptr);
         LineTo(dc, X(x), b);
-        std::wstring s = mmss(x);
+        std::wstring s = x < 0 ? L"-" + mmss(-x) : mmss(x);
         TextOutW(dc, X(x) - S(14), b + S(6), s.c_str(), static_cast<int>(s.size()));
     }
     SelectObject(dc, oldPen);
     DeleteObject(grid);
 
+    if (!started) {
+        const wchar_t* msg = L"Switch the machine on (Power) to start the graph";
+        drawText(dc, g.heading, RGB(140, 132, 122), (l + r - textWidth(dc, g.heading, msg)) / 2, (t + b) / 2 - S(10), msg);
+        SelectObject(dc, g.small);
+    }
+
     HBRUSH heatBrush = CreateSolidBrush(RGB(244, 214, 190));
     int colW = std::max(1, static_cast<int>(std::ceil((r - l) / (x1 - x0))) + 1);
     for (const auto& s : g.hist) {
         double x = tx(s);
-        if (x < x0 || x > x1) continue;
+        if (!inGraph(s.t) || x < x0 || x > x1) continue;
         RECT bar{X(x), b - static_cast<int>(s.heat / 100.0 * (b - t) * 0.18), X(x) + colW, b};
         FillRect(dc, &bar, heatBrush);
     }
@@ -876,7 +927,7 @@ void paintGraph(HDC dc, RECT area) {
         bool first = true;
         for (const auto& s : g.hist) {
             double x = tx(s);
-            if (x < x0 || x > x1) { first = true; continue; }
+            if (!inGraph(s.t) || x < x0 || x > x1) { first = true; continue; }
             double v = get(s);
             if (!ror && v <= -0.5) { first = true; continue; }
             int py = ror ? YR(R(v)) : Y(T(v));
@@ -920,12 +971,12 @@ void paintGraph(HDC dc, RECT area) {
     HBRUSH labelBg = CreateSolidBrush(RGB(250, 249, 246));
     for (const auto& e : g.events) {
         if (e.type == "ALARM" || e.type == "NOTE") continue;
-        double x = roast ? e.t_roast : e.t;
-        if (x < x0 || x > x1) continue;
+        double x = e.t - origin;
+        if (!inGraph(e.t) || x < x0 || x > x1) continue;
         int px = X(x);
         MoveToEx(dc, px, t + S(5), nullptr);
         LineTo(dc, px, b);
-        std::wstring name = widen(e.type), detail = mmss(roast ? e.t_roast : e.t);
+        std::wstring name = widen(e.type), detail = x < 0 ? L"-" + mmss(-x) : mmss(x);
         if (e.bt != -1.0 && e.type != "COOL") detail += fmt(L"  %.0f%s", T(e.bt), TU());
         int nameW = textWidth(dc, g.heading, name), w = nameW + S(4) + textWidth(dc, g.small, detail);
         int row = 0;
@@ -1209,9 +1260,9 @@ void preheat() {
     c["cmd"] = "preheat";
     c["target_C"] = g.preheatC;
     HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
-    showError(command(c));
+    showError(command(c));  // the skipped-ahead samples arrive with the next refresh
     SetCursor(old);
-    reloadHistory();
+    refresh();
 }
 
 void setSpeed(int i) {
@@ -1556,6 +1607,12 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (lp) onSlider(reinterpret_cast<HWND>(lp), LOWORD(wp));
             return 0;
         case WM_COMMAND: onCommand(LOWORD(wp), HIWORD(wp)); return 0;
+        case WM_APP_ROAST_DONE:
+            // Roast finished (COOL): the graph is already frozen; switch the
+            // machine off, then show the report.
+            setPower(false);
+            showReport();
+            return 0;
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (nm->hwndFrom == g.statusBar && nm->code == NM_CLICK)

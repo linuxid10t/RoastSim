@@ -49,7 +49,7 @@ On Linux, port 502 needs privileges. Use `--modbus-port 5020` and set the same p
 
 ## Using it
 
-* **Power:** the machine boots switched off. Flip the power switch (web UI, native app, console `power on`) before preheating or roasting. Switched off, the dials keep their settings but nothing heats, blows or turns, and the machine just cools to ambient.
+* **Power:** the machine boots switched off. Flip the power switch (web UI, native app, console `power on`) before preheating or roasting. Switched off, the dials keep their settings but nothing heats, blows or turns, and the machine just cools to ambient. In the Win32 app the graph starts when you switch on and ends with the roast report at COOL, when the app switches the machine off again.
 * **Roast:** pick a roaster and bean, set the batch, **Preheat** (drums), set heat/fan, **Charge**, watch for the turning point, DRY and first crack (with crack sounds), then **Drop**. The roast report (times, DTR, Agtron whole/ground/spread, weight loss, defects) appears when cooling ends.
 * **Environment:** ambient temperature, line voltage and sag (big for poppers), altitude (less air mass), humidity, gas pressure.
 * **Faults:** open/shorted/drifting/spiking probes to test Artisan setups; blow the popper's thermal fuse by choking its airflow, then **Repair**.
