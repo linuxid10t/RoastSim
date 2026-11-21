@@ -8,6 +8,7 @@ One JSON command set, reachable four ways:
 | HTTP | `POST /api/command` with the command as the body. Shortcuts: `GET /api/state`, `GET /api/list` |
 | C API | `rs_host_command(host, json, origin, out, outlen)` |
 | Console | `roastsimd` → `json {"cmd": ...}` (or the short forms; type `help`) |
+| MCP | `POST /mcp` or `roastsimd --mcp`: AI-friendly tools over this API (see [MCP.md](MCP.md)); the `roastsim_command` tool sends any command below |
 
 Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 

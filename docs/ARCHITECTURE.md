@@ -13,7 +13,7 @@ RoastSim is a set of layers. Each layer may only depend on the layers below it.
  ├────────────────────────────────────────────────────────────────────────────┤
  │ Service  (roastsim_service)                                                │
  │  Host: owns the Simulation, real-time pacing thread, mutex, JSON API       │
- │  Protocol adapters: Modbus TCP · HTTP + WebSocket (UI + Artisan) · TC4     │
+ │  Protocol adapters: Modbus TCP · HTTP + WebSocket (UI + Artisan) · TC4 · MCP│
  │  Platform layer: sockets · serial/pty · executable paths   (only OS code)  │
  ├────────────────────────────────────────────────────────────────────────────┤
  │ Core  (roastsim_core)   pure C++17, no OS headers, no threads, no sockets  │

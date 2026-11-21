@@ -80,12 +80,14 @@ if(RS_BUILD_SERVICE)
     service/src/presets.cpp
     service/src/modbus_server.cpp
     service/src/web_server.cpp
+    service/src/mcp_server.cpp
     service/src/tc4_serial.cpp
     service/src/capi.cpp
     service/src/audio_synth.cpp
     service/src/platform_audio.cpp
   )
   target_include_directories(roastsim_service PUBLIC service/include)
+  target_compile_definitions(roastsim_service PRIVATE RS_VERSION="${PROJECT_VERSION}")
   target_link_libraries(roastsim_service PUBLIC roastsim_core Threads::Threads)
   if(WIN32)
     target_link_libraries(roastsim_service PUBLIC ws2_32 winmm)

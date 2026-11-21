@@ -73,6 +73,7 @@ It simulates the heat transfer, moisture loss, browning, cracks, smoke, sound an
 | `roastsim_check` | Validates presets and runs reference roasts. |
 | `roastsim_sound` | Renders the roaster's sound to a WAV file. |
 | `http://localhost:8080/` | Web control panel, served by either simulator. |
+| `http://localhost:8080/mcp` | MCP server, so AI assistants can run roasts. `roastsimd --mcp` gives the same tools over stdio. |
 
 **Roasters out of the box:** fluid-bed air roaster · spouted-bed pilot · stock popcorn popper (variac, thermostat, thermal fuse) · modded popper (SSR heater + separate fan) · home induction drum 1 kg · tabletop IR drum 250 g · gas sample drum 1 kg · shop gas drums 5 kg and 15 kg · stir-arm pan.
 
@@ -122,6 +123,18 @@ The full guide, including WebSocket and TC4, is in [docs/ARTISAN_SETUP.md](docs/
 3. **Review.** The report covers times, DTR, Agtron whole/ground/spread, weight loss and defects.
 
 <details>
+<summary><b>AI control (MCP)</b></summary>
+
+An AI assistant can run the roaster through the built-in [MCP](https://modelcontextprotocol.io) server: load a roaster and bean, preheat, charge, adjust heat and fan, wait for first crack, drop, and read the report. You watch in the app or web UI while it roasts. For Claude Code, start RoastSim and run:
+
+```powershell
+claude mcp add --transport http roastsim http://127.0.0.1:8080/mcp
+```
+
+For Claude Desktop and other clients that launch servers themselves, use `roastsimd --mcp`. See [docs/MCP.md](docs/MCP.md) for the tools and setup.
+</details>
+
+<details>
 <summary><b>Environment</b></summary>
 
 Set the ambient temperature, line voltage and sag, altitude, humidity and gas pressure. Loading a roaster sets its rated wall voltage. To simulate a different supply, use the Environment dialog.
@@ -169,6 +182,7 @@ The suite covers:
 * Modbus framing and registers
 * the Artisan WebSocket dialect and push messages
 * HTTP, TC4 commands and the C API
+* the MCP tools, over direct calls and HTTP
 
 ## Documentation
 
@@ -176,6 +190,7 @@ The suite covers:
 |---|---|
 | [ARTISAN_SETUP](docs/ARTISAN_SETUP.md) | Connecting Artisan over Modbus, WebSocket or TC4 |
 | [API](docs/API.md) | The JSON command set over WebSocket, HTTP, C API and console |
+| [MCP](docs/MCP.md) | Letting an AI assistant run roasts over the Model Context Protocol |
 | [PHYSICS](docs/PHYSICS.md) | The bean-parcel model and machine physics |
 | [SOUND](docs/SOUND.md) | The sound engine and crack voicing |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Layering, platform split and the 3D view plan |

@@ -1909,6 +1909,8 @@ void onCommand(int id, int code) {
                         L"  Modbus TCP: 127.0.0.1:502\n"
                         L"  WebSocket:  ws://127.0.0.1:8080/WebSocket\n"
                         L"See docs/ARTISAN_SETUP.md for register maps and settings.\n\n"
+                        L"AI assistants can drive it over MCP: http://127.0.0.1:8080/mcp\n"
+                        L"(see docs/MCP.md).\n\n"
                         L"The Units menu also sets what Artisan receives (match Artisan's C/F mode).\n"
                         L"Edit roastsim.json next to the .exe to change ports or bind to the LAN.",
                         L"About RoastSim", MB_ICONINFORMATION);

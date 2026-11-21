@@ -92,4 +92,8 @@ std::string userPresetDir();
 // Atomically save a preset. A null previous value means create a new file.
 bool writePreset(const std::string& path, const std::string& contents, const std::string* previous, std::string* err);
 
+// Raw bytes on stdin/stdout (no CRLF translation or Ctrl+Z end-of-file on
+// Windows), for line protocols such as MCP over stdio. No-op elsewhere.
+void setBinaryStdio();
+
 }  // namespace roastsim::platform

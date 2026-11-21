@@ -9,6 +9,7 @@
 #include "../service/src/sha1.hpp"
 #include "roastsim/audio.hpp"
 #include "roastsim/host.hpp"
+#include "roastsim/mcp.hpp"
 #include "roastsim/platform.hpp"
 #include "roastsim/roastsim.h"
 #include "test_util.hpp"
@@ -627,4 +628,153 @@ TEST(c_api) {
     CHECK(full > sizeof tiny && std::strlen(tiny) == sizeof tiny - 1);
     rs_host_stop(h);
     rs_host_destroy(h);
+}
+
+namespace {
+
+json::Value mcpCall(McpServer& mcp, const std::string& tool, const std::string& args = "{}") {
+    static int id = 100;
+    json::Value msg = json::Value::parse(R"({"jsonrpc":"2.0","method":"tools/call","params":{"name":")" + tool +
+                                         R"(","arguments":)" + args + "}}");
+    msg["id"] = ++id;
+    McpServer::Result r = mcp.handle(msg);
+    if (r.pending) {
+        auto end = std::chrono::steady_clock::now() + 5s;
+        while (!r.pending(r.reply) && std::chrono::steady_clock::now() < end) std::this_thread::sleep_for(20ms);
+    }
+    CHECK(r.reply.get("id", 0.0) == id);
+    return r.reply["result"];
+}
+
+// Tool payload (structuredContent) of a successful call; prints the error otherwise.
+json::Value mcpOk(McpServer& mcp, const std::string& tool, const std::string& args = "{}") {
+    json::Value r = mcpCall(mcp, tool, args);
+    if (r.getBool("isError", true)) {
+        std::printf("    %s %s: %s\n", tool.c_str(), args.c_str(), r["content"].at(0).get("text", "").c_str());
+        CHECK(!"tool failed");
+    }
+    CHECK(r["content"].at(0).get("type", "") == "text");
+    return r["structuredContent"];
+}
+
+std::string httpExchange(int port, const std::string& request) {
+    std::string err;
+    platform::socket_t h = platform::connectTcp("127.0.0.1", port, &err);
+    if (h == platform::kInvalidSocket) return "";
+    sendAll(h, request);
+    std::string resp = recvAtLeast(h, 1 << 20, 3000);
+    platform::closeSocket(h);
+    return resp;
+}
+
+std::string mcpPost(const std::string& body, const std::string& extraHeaders = "") {
+    return httpExchange(basePort() + 1, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n" +
+                                            extraHeaders + "Content-Length: " + std::to_string(body.size()) +
+                                            "\r\n\r\n" + body);
+}
+
+}  // namespace
+
+TEST(mcp_server) {
+    auto host = startHost("drum_home_1kg");
+    McpServer mcp(*host);
+
+    // Handshake and discovery
+    McpServer::Result init = mcp.handle(json::Value::parse(
+        R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},
+            "clientInfo":{"name":"test","version":"1"}}})"));
+    CHECK(init.reply["result"].get("protocolVersion", "") == "2025-06-18");
+    CHECK(init.reply["result"]["serverInfo"].get("name", "") == "roastsim");
+    CHECK(init.reply["result"]["capabilities"].has("tools"));
+    CHECK(mcp.handle(json::Value::parse(
+                         R"({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}})"))
+              .reply["result"]
+              .get("protocolVersion", "") == "2025-11-25");
+    CHECK(mcp.handle(json::Value::parse(R"({"jsonrpc":"2.0","method":"notifications/initialized"})")).reply.isNull());
+    json::Value list = mcp.handle(json::Value::parse(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})")).reply;
+    CHECK(list["result"]["tools"].size() >= 15);
+    for (const auto& t : list["result"]["tools"].items())
+        CHECK(t["inputSchema"].get("type", "") == "object" && !t.get("description", "").empty());
+    CHECK(mcp.handle(json::Value::parse(R"({"jsonrpc":"2.0","id":4,"method":"nope"})")).reply["error"].get("code", 0.0) ==
+          -32601);
+    CHECK(mcp.handle(json::Value::parse(R"({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope"}})"))
+              .reply["error"]
+              .get("code", 0.0) == -32602);
+
+    // Argument checking is reported to the model as a tool error
+    CHECK(mcpCall(mcp, "set_controls", R"({"heat":"hot"})").getBool("isError", false));
+    CHECK(mcpCall(mcp, "set_controls", R"({"heat":150})").getBool("isError", false));
+    CHECK(mcpCall(mcp, "set_controls", R"({"flame":50})").getBool("isError", false));
+    CHECK(mcpCall(mcp, "set_controls", R"({"voltage":50})").getBool("isError", false));  // a drum has no variac
+    CHECK(mcpCall(mcp, "reset_machine").getBool("isError", false));                      // mode is required
+    CHECK(mcpCall(mcp, "get_report").getBool("isError", false));                         // nothing roasted yet
+
+    // A whole roast, with the clock paused so only advance_time moves it
+    json::Value presets = mcpOk(mcp, "list_presets");
+    CHECK(presets["roasters"].size() >= 8 && presets["beans"].size() >= 5);
+    CHECK(presets.get("loaded_roaster", "") == "drum_home_1kg");
+    CHECK(mcpOk(mcp, "load_roaster", R"({"roaster":"drum_home_1kg","bean":"colombia_washed"})").getBool("loaded", false));
+    CHECK(mcpOk(mcp, "set_speed", R"({"paused":true})").getBool("paused", false));
+    CHECK(mcpOk(mcp, "set_power", R"({"on":true})").getBool("power", false));
+    CHECK(mcpOk(mcp, "set_controls", R"({"heat":85,"fan":30,"drum":60})")["controls_pct"].get("heat", 0.0) == 85);
+    json::Value pre = mcpOk(mcp, "preheat", R"({"target_C":200})");
+    CHECK(pre.get("simulated_s", 0.0) > 0);
+    mcpOk(mcp, "set_controls", R"({"heat":85})");
+    json::Value charged = mcpOk(mcp, "charge", R"({"batch_g":500})");
+    CHECK(charged.get("phase", "") == "roasting" && charged["beans"].get("mass_g", 0.0) > 400);
+    double t0 = host->snapshot().t_session;
+    json::Value adv = mcpOk(mcp, "advance_time", R"({"seconds":20})");
+    CHECK(adv.get("mode", "") == "fast-forward" && adv.get("stopped_because", "") == "time");
+    CHECK_RANGE(host->snapshot().t_session - t0, 19.9, 21.0);
+    adv = mcpOk(mcp, "advance_time", R"({"seconds":900,"until":"DRY","stop_on_alarm":false})");
+    CHECK(adv.getBool("condition_met", false) && adv.get("stopped_because", "") == "event DRY");
+    CHECK(mcpCall(mcp, "advance_time", R"({"until":"DRY"})").getBool("isError", false));  // already happened
+    adv = mcpOk(mcp, "advance_time", R"({"seconds":900,"until":"FCs","stop_on_alarm":false})");
+    CHECK(adv.getBool("condition_met", false));
+    CHECK(adv["state"]["beans"].get("first_crack_pct", 0.0) > 0);
+    double fcBt = host->snapshot().bt;
+    adv = mcpOk(mcp, "advance_time",
+                R"({"seconds":600,"until_bt_C":)" + json::formatNumber(fcBt + 8, 1) + R"(,"stop_on_alarm":false})");
+    CHECK(adv.getBool("condition_met", false) && host->snapshot().bt >= fcBt + 8);
+    CHECK(mcpOk(mcp, "mark_event", R"({"event":"tasty"})").get("marked", "") == "tasty");
+    CHECK(mcpOk(mcp, "drop").get("beans_in", "") == "tray");
+    json::Value rep = mcpOk(mcp, "get_report");
+    CHECK(rep.get("fcs_s", 0.0) > 0 && rep.get("dtr_pct", 0.0) > 0 && !rep.get("roast_level", "").empty());
+    json::Value curve = mcpOk(mcp, "get_roast_curve", R"({"interval_s":60})");
+    CHECK(curve["rows"].size() >= 8 && curve["rows"].at(0).size() == 6);
+    CHECK(curve["rows"].at(0).at(0).num() < 0);  // starts before CHARGE
+    std::vector<std::string> types;
+    for (const auto& e : curve["events"].items()) types.push_back(e.get("type", ""));
+    CHECK(types.size() >= 5 && types.front() == "CHARGE" && types.back() == "DROP");
+    json::Value st = mcpOk(mcp, "get_state");
+    CHECK(st["roast_events"].size() == curve["events"].size() && st["clock"].getBool("paused", false));
+    CHECK(mcpOk(mcp, "get_state", R"({"detail":"full"})").has("roaster_def"));
+    CHECK(mcpOk(mcp, "roastsim_command", R"({"command":{"cmd":"server"}})").has("config"));
+    CHECK(mcpCall(mcp, "roastsim_command", R"({"command":{"cmd":"subscribe"}})").getBool("isError", false));
+    CHECK(mcpOk(mcp, "reset_machine", R"({"mode":"cold"})").get("phase", "") == "idle");
+
+    // Real-time waiting resolves later through the pending poll
+    mcpOk(mcp, "set_speed", R"({"paused":false,"time_scale":10})");
+    json::Value rt = mcpOk(mcp, "advance_time", R"({"seconds":2,"realtime":true})");
+    CHECK(rt.get("mode", "") == "real-time" && rt.get("stopped_because", "") == "time");
+    mcpOk(mcp, "set_speed", R"({"paused":true})");
+    CHECK(mcpOk(mcp, "advance_time", R"({"seconds":2,"realtime":true})").get("stopped_because", "") == "paused");
+
+    // Streamable HTTP on the web server
+    std::string r = mcpPost(R"({"jsonrpc":"2.0","id":7,"method":"tools/list"})");
+    CHECK(r.find("200 OK") != std::string::npos && r.find("\"advance_time\"") != std::string::npos);
+    r = mcpPost(R"({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"get_state"}})",
+                "Origin: http://localhost:6274\r\n");
+    CHECK(r.find("200 OK") != std::string::npos && r.find("\"phase\"") != std::string::npos);
+    r = mcpPost(R"({"jsonrpc":"2.0","id":9,"method":"ping"})", "Origin: http://evil.example\r\n");
+    CHECK(r.find("403 Forbidden") != std::string::npos);
+    CHECK(mcpPost(R"({"jsonrpc":"2.0","method":"notifications/initialized"})").find("202 Accepted") != std::string::npos);
+    CHECK(mcpPost("{nope").find("400 Bad Request") != std::string::npos);
+    r = httpExchange(basePort() + 1, "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n");
+    CHECK(r.find("405 Method Not Allowed") != std::string::npos);
+    mcpOk(mcp, "set_speed", R"({"paused":false})");
+    r = mcpPost(R"({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"advance_time",
+                   "arguments":{"seconds":3,"realtime":true}}})");
+    CHECK(r.find("200 OK") != std::string::npos && r.find("real-time") != std::string::npos);
+    host->stop();
 }

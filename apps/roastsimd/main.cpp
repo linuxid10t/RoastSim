@@ -15,6 +15,7 @@
 #include "roastsim/audio.hpp"
 #include "roastsim/catalog.hpp"
 #include "roastsim/host.hpp"
+#include "roastsim/mcp.hpp"
 #include "roastsim/platform.hpp"
 #include "roastsim/scenario.hpp"
 
@@ -45,6 +46,10 @@ void usage() {
         "  --data DIR, --web DIR  resource directories\n"
         "  --presets DIR        custom preset storage directory\n"
         "  --script FILE        run a scripted roast as fast as possible, print the report, exit\n"
+        "  --mcp                MCP server on stdin/stdout for AI assistants (see docs/MCP.md): drives the\n"
+        "                       RoastSim already running on --http-port if there is one, else runs its own\n"
+        "  --mcp-connect H:P    MCP on stdio, always driving the RoastSim at host H, HTTP port P\n"
+        "  --mcp-embedded       MCP on stdio, always running its own simulator\n"
         "  --list               list roaster and bean presets\n"
         "  --quiet              no periodic status line\n"
         "  --sound              play the roaster sound locally (Windows; elsewhere use the web UI)\n");
@@ -195,12 +200,151 @@ int runScript(const std::string& path, const std::string& dataDir) {
     return 0;
 }
 
+// ------------------------------------------------------------ MCP over stdio
+
+// One HTTP/1.1 POST on a fresh connection (the RoastSim web server closes
+// every connection after its reply). Returns the status code, or 0 when the
+// server could not be reached.
+int httpPost(const std::string& host, int port, const std::string& path, const std::string& body, int timeoutMs,
+             std::string& reply, std::string& err) {
+    platform::socket_t s = platform::connectTcp(host, port, &err);
+    if (s == platform::kInvalidSocket) return 0;
+    std::string out = "POST " + path + " HTTP/1.1\r\nHost: " + host + ":" + std::to_string(port) +
+                      "\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n"
+                      "Content-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+    std::string in;
+    char buf[16384];
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    bool closed = false;
+    while (!closed && std::chrono::steady_clock::now() < deadline) {
+        std::vector<platform::PollItem> items(1);
+        items[0].s = s;
+        items[0].wantWrite = !out.empty();
+        platform::pollSockets(items, 100);
+        if (items[0].writable && !out.empty()) {
+            long n = platform::sendSome(s, out.data(), out.size());
+            if (n < 0) break;
+            out.erase(0, static_cast<std::size_t>(n));
+        }
+        if (items[0].readable) {
+            long n = platform::recvSome(s, buf, sizeof buf);
+            if (n > 0) in.append(buf, static_cast<std::size_t>(n));
+            else if (n == 0 || n == -2) closed = true;
+        }
+    }
+    platform::closeSocket(s);
+    std::size_t hdrEnd = in.find("\r\n\r\n");
+    if (in.compare(0, 5, "HTTP/") != 0 || hdrEnd == std::string::npos) {
+        err = closed ? "bad HTTP reply" : "no reply in time";
+        return 0;
+    }
+    reply = in.substr(hdrEnd + 4);
+    return std::atoi(in.c_str() + in.find(' ') + 1);
+}
+
+void mcpWrite(const json::Value& v) {
+    std::string line = v.dump() + "\n";
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fflush(stdout);
+}
+
+json::Value mcpError(const json::Value& id, const std::string& msg) {
+    json::Value v = json::Value::object();
+    v["jsonrpc"] = "2.0";
+    v["id"] = id;
+    v["error"]["code"] = -32603;
+    v["error"]["message"] = msg;
+    return v;
+}
+
+// Reads JSON-RPC messages, one per line, until stdin closes.
+template <typename Handle>
+void mcpLoop(Handle handle) {
+    std::string line;
+    while (!g_quit && std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.find_first_not_of(" \t") == std::string::npos) continue;
+        std::string err;
+        json::Value msg = json::Value::parse(line, &err);
+        if (!err.empty()) mcpWrite(McpServer::parseError(err));
+        else handle(msg, line);
+    }
+}
+
+int runMcp(HostConfig cfg, const std::string& connect, bool embeddedOnly) {
+    platform::setBinaryStdio();
+    // Proxy mode: is a RoastSim (the app, the web server or another roastsimd) already serving?
+    std::string host = cfg.bind_address == "0.0.0.0" || cfg.bind_address.empty() ? "127.0.0.1" : cfg.bind_address;
+    int port = cfg.http_port;
+    if (!connect.empty()) {
+        std::size_t colon = connect.rfind(':');
+        host = colon == std::string::npos ? connect : connect.substr(0, colon);
+        if (colon != std::string::npos) port = std::atoi(connect.c_str() + colon + 1);
+    }
+    if (!embeddedOnly) {
+        platform::netInit();
+        std::string reply, err;
+        int status = httpPost(host, port, "/mcp", R"({"jsonrpc":"2.0","id":0,"method":"ping"})", 5000, reply, err);
+        if (status == 200 && reply.find("\"result\"") != std::string::npos) {
+            std::fprintf(stderr, "roastsimd: MCP bridge to the RoastSim at http://%s:%d/mcp\n", host.c_str(), port);
+            mcpLoop([&](const json::Value& msg, const std::string& line) {
+                std::string body, e;
+                int code = httpPost(host, port, "/mcp", line, 120000, body, e);
+                bool request = msg.isObject() && msg.has("id") && !msg.get("method", "").empty();
+                if (code == 200 || (code >= 400 && body.find("\"jsonrpc\"") != std::string::npos)) {
+                    if (!body.empty()) {
+                        std::fwrite(body.data(), 1, body.size(), stdout);
+                        std::fwrite("\n", 1, 1, stdout);
+                        std::fflush(stdout);
+                    }
+                } else if (request && code != 202) {
+                    mcpWrite(mcpError(msg["id"], code == 0 ? "RoastSim at " + host + ":" + std::to_string(port) +
+                                                                 " is not reachable (" + e + "). Is it still running?"
+                                                           : "RoastSim replied HTTP " + std::to_string(code)));
+                }
+            });
+            return 0;
+        }
+        if (!connect.empty()) {
+            std::fprintf(stderr, "roastsimd: no RoastSim MCP endpoint at http://%s:%d/mcp (%s)\n", host.c_str(), port,
+                         status ? ("HTTP " + std::to_string(status)).c_str() : err.c_str());
+            return 1;
+        }
+    }
+
+    // Embedded mode: our own simulator, with the usual servers so a person can
+    // watch in the browser and Artisan can log. Nothing but MCP goes to stdout.
+    Host sim(cfg);
+    std::string err;
+    if (!sim.start(&err)) {
+        std::fprintf(stderr, "roastsimd: %s\n", err.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "roastsimd: MCP server on stdio with its own simulator\n");
+    for (const auto& m : sim.startupMessages()) std::fprintf(stderr, "  %s\n", m.c_str());
+    McpServer mcp(sim);
+    mcpLoop([&](const json::Value& msg, const std::string&) {
+        McpServer::Result r = mcp.handle(msg);
+        if (r.pending) {
+            json::Value reply;
+            while (!r.pending(reply)) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            mcpWrite(reply);
+        } else if (!r.reply.isNull()) {
+            mcpWrite(r.reply);
+        }
+    });
+    sim.stop();
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     HostConfig cfg;
     std::string script;
     bool list = false, quiet = false, sound = false;
+    bool mcp = false, mcpEmbedded = false;
+    std::string mcpConnect;
     // Like the Win32 app, read roastsim.json next to the program unless --config
     // names another file; unit changes made at runtime are saved back to it.
     bool explicitConfig = false;
@@ -246,6 +390,9 @@ int main(int argc, char** argv) {
         else if (a == "--web") cfg.web_dir = next();
         else if (a == "--presets") cfg.presets_dir = next();
         else if (a == "--script") script = next();
+        else if (a == "--mcp") mcp = true;
+        else if (a == "--mcp-connect") { mcp = true; mcpConnect = next(); }
+        else if (a == "--mcp-embedded") { mcp = true; mcpEmbedded = true; }
         else if (a == "--list") list = true;
         else if (a == "--quiet") quiet = true;
         else if (a == "--sound") sound = true;
@@ -266,6 +413,7 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
+    if (mcp) return runMcp(cfg, mcpConnect, mcpEmbedded);
 
     Host host(cfg);
     std::string err;

@@ -7,7 +7,10 @@
 #include "roastsim/platform.hpp"
 
 #if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
+#include <cstdio>
 #elif defined(__HAIKU__)
 #include <OS.h>
 #include <image.h>
@@ -157,6 +160,13 @@ bool writePreset(const std::string& path, const std::string& contents, const std
     }
     fs::remove(temp, ec);
     return fail("Could not write the custom preset file.");
+}
+
+void setBinaryStdio() {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
 }
 
 }  // namespace roastsim::platform

@@ -4,6 +4,7 @@
 //       GET  /                  -> web UI (files from web_dir)
 //       GET  /api/state         -> JSON state       GET /api/list -> roasters & beans
 //       POST /api/command       -> JSON command API (body = command object)
+//       POST /mcp               -> Model Context Protocol (Streamable HTTP, JSON replies; see docs/MCP.md)
 //       GET  <any path> + Upgrade: websocket -> WebSocket
 //   * WebSocket messages are JSON text. Two dialects share every socket:
 //       {"cmd": ...}          native API (web UI, tools); {"cmd":"subscribe"} streams state
@@ -18,6 +19,7 @@
 
 #include "internal.hpp"
 #include "roastsim/audio.hpp"
+#include "roastsim/mcp.hpp"
 #include "sha1.hpp"
 
 namespace fs = std::filesystem;
@@ -47,6 +49,8 @@ struct Conn {
     double audioStart = 0;
     std::uint64_t audioSent = 0;
     std::vector<float> audioBuf;
+    // An MCP tool call still waiting (advance_time in real time); its HTTP reply is sent when it resolves.
+    McpServer::Pending mcpPending;
 };
 
 double nowSeconds() {
@@ -69,6 +73,25 @@ bool trustedPresetOrigin(const std::map<std::string, std::string>& headers, cons
     if (bindAddress != "localhost" && bindAddress.compare(0, 4, "127.") != 0) return true;
     const std::string hostname = authority.substr(0, authority.find(':'));
     return hostname == "localhost" || hostname == (bindAddress == "localhost" ? "127.0.0.1" : bindAddress);
+}
+
+// MCP over HTTP must reject browser pages from other sites (DNS rebinding):
+// a request without Origin is a native client; with one, it must be this
+// server's own origin or a page on the local machine (e.g. the MCP Inspector).
+bool trustedMcpOrigin(const std::map<std::string, std::string>& headers) {
+    const auto origin = headers.find("origin");
+    if (origin == headers.end() || origin->second == "null") return origin == headers.end();
+    std::string from = lower(origin->second);
+    const auto host = headers.find("host");
+    if (host != headers.end() && (from == "http://" + lower(host->second) || from == "https://" + lower(host->second)))
+        return true;
+    std::size_t scheme = from.find("://");
+    if (scheme == std::string::npos) return false;
+    std::string authority = from.substr(scheme + 3);
+    if (authority.empty()) return false;
+    std::string hostname = authority[0] == '[' ? authority.substr(0, authority.find(']') + 1)
+                                               : authority.substr(0, authority.find(':'));
+    return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "[::1]";
 }
 
 json::Value presetOriginError() {
@@ -126,9 +149,12 @@ std::string wsFrame(const std::string& payload, std::uint8_t opcode = 1) {
 struct NetServer::Impl {
     Host& host;
     std::map<platform::socket_t, std::unique_ptr<Conn>> conns;
-    explicit Impl(Host& h) : host(h) {}
+    McpServer mcp;
+    explicit Impl(Host& h) : host(h), mcp(h) {}
 
     void handleHttp(Conn& c);
+    void handleMcp(Conn& c, const std::string& method, const std::map<std::string, std::string>& headers,
+                   const std::string& body);
     void handleWsData(Conn& c);
     void handleWsMessage(Conn& c, const std::string& text);
     void handleArtisan(Conn& c, const json::Value& msg);
@@ -359,8 +385,12 @@ void NetServer::Impl::handleHttp(Conn& c) {
 
     if (method == "OPTIONS") {
         c.out += "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n"
-                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
+                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                 "Access-Control-Allow-Headers: Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id\r\n"
                  "Content-Length: 0\r\nConnection: close\r\n\r\n";
+    } else if (path == "/mcp") {
+        handleMcp(c, method, headers, body);
+        if (c.mcpPending) return;  // the reply is sent from periodic() when the wait ends
     } else if (path == "/api/state") {
         c.out += httpResponse(200, "OK", "application/json", host.stateJson(true).dump());
     } else if (path == "/api/list") {
@@ -397,7 +427,40 @@ void NetServer::Impl::handleHttp(Conn& c) {
     c.closeAfterWrite = true;
 }
 
+void NetServer::Impl::handleMcp(Conn& c, const std::string& method,
+                                const std::map<std::string, std::string>& headers, const std::string& body) {
+    if (!trustedMcpOrigin(headers)) {
+        c.out += httpResponse(403, "Forbidden", "text/plain", "MCP requests from this origin are not allowed");
+        return;
+    }
+    if (method != "POST") {
+        // No server-to-client SSE stream and no sessions: POST only.
+        c.out += "HTTP/1.1 405 Method Not Allowed\r\nAllow: POST, OPTIONS\r\nAccess-Control-Allow-Origin: *\r\n"
+                 "Content-Length: 0\r\nConnection: close\r\n\r\n";
+        return;
+    }
+    std::string err;
+    json::Value msg = json::Value::parse(body, &err);
+    if (!err.empty()) {
+        c.out += httpResponse(400, "Bad Request", "application/json", McpServer::parseError(err).dump());
+        return;
+    }
+    McpServer::Result r = mcp.handle(msg);
+    if (r.pending) c.mcpPending = std::move(r.pending);
+    else if (r.reply.isNull()) c.out += httpResponse(202, "Accepted", "application/json", "");
+    else c.out += httpResponse(200, "OK", "application/json", r.reply.dump());
+}
+
 void NetServer::Impl::periodic(Conn& c, double now) {
+    if (c.mcpPending) {
+        json::Value reply;
+        if (c.mcpPending(reply)) {
+            c.mcpPending = nullptr;
+            c.out += httpResponse(200, "OK", "application/json", reply.dump());
+            c.closeAfterWrite = true;
+        }
+        return;
+    }
     if (c.kind != ConnKind::WebSocket) return;
     if (c.audio) {
         // Keep ~150 ms rendered ahead of real time; the browser schedules the chunks.
