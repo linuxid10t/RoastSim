@@ -125,10 +125,10 @@ The full guide, including WebSocket and TC4, is in [docs/ARTISAN_SETUP.md](docs/
 <details>
 <summary><b>AI control (MCP)</b></summary>
 
-An AI assistant can run the roaster through the built-in [MCP](https://modelcontextprotocol.io) server: load a roaster and bean, preheat, charge, adjust heat and fan, wait for first crack, drop, and read the report. You watch in the app or web UI while it roasts. For Claude Code, start RoastSim and run:
+An AI assistant can run the roaster through the built-in [MCP](https://modelcontextprotocol.io) server: load a roaster and bean, preheat, charge, adjust heat and fan, wait for first crack, drop, and read the report. You watch in the app or web UI while it roasts. Claude Code picks up the server from this repository's `.mcp.json`: start RoastSim, open the folder in Claude Code, and approve `roastsim` when it asks. To use it from any folder, run:
 
 ```powershell
-claude mcp add --transport http roastsim http://127.0.0.1:8080/mcp
+claude mcp add --scope user --transport http roastsim http://127.0.0.1:8080/mcp
 ```
 
 For Claude Desktop and other clients that launch servers themselves, use `roastsimd --mcp`. See [docs/MCP.md](docs/MCP.md) for the tools and setup.

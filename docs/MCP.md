@@ -15,10 +15,12 @@ The assistant drives the same machine as everything else. If the Win32 app or we
 
 ### Claude Code
 
-Start RoastSim, then run:
+The repository's [`.mcp.json`](../.mcp.json) adds `roastsim` as a project server, so Claude Code offers it when you open this folder. Approve it once when Claude Code asks. It connects to the HTTP address, so start the Win32 app or `roastsimd` first. If RoastSim wasn't running when the session started, start it and reconnect the server from `/mcp`.
+
+To use RoastSim from Claude Code in other folders, start RoastSim and run:
 
 ```powershell
-claude mcp add --transport http roastsim http://127.0.0.1:8080/mcp
+claude mcp add --scope user --transport http roastsim http://127.0.0.1:8080/mcp
 ```
 
 ### Claude Desktop
