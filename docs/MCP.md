@@ -38,6 +38,38 @@ Claude Desktop starts local servers itself. Add this to `claude_desktop_config.j
 
 Restart Claude Desktop. If the Win32 app is open, the AI drives it. Otherwise `roastsimd` runs a simulator in the background, and you can watch it at `http://localhost:8080/`.
 
+### Hermes Agent
+
+[Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) reads MCP servers from `mcp_servers` in `~/.hermes/config.yaml`. If Hermes runs on the same machine as RoastSim, start RoastSim and point Hermes at the HTTP address:
+
+```yaml
+mcp_servers:
+  roastsim:
+    url: "http://127.0.0.1:8080/mcp"
+```
+
+To have Hermes start RoastSim itself, use stdio instead:
+
+```yaml
+mcp_servers:
+  roastsim:
+    command: "C:/path/to/RoastSim2026/build/roastsimd.exe"
+    args: ["--mcp"]
+```
+
+Then run `/reload-mcp` in a Hermes chat, or restart Hermes. The tools appear with a server prefix, for example `mcp__roastsim__advance_time`.
+
+**Hermes in WSL2:** under WSL's default networking, `127.0.0.1` inside WSL is not the Windows machine, so the HTTP address can't reach a RoastSim running on Windows. Use one of these instead:
+
+* Use the stdio entry with the Windows path to `roastsimd.exe`, for example `/mnt/c/path/to/RoastSim2026/build/roastsimd.exe`. WSL runs Windows programs directly. `roastsimd.exe` then runs on Windows, where it can reach the RoastSim app on `127.0.0.1:8080`.
+* Or turn on mirrored networking (`networkingMode=mirrored` under `[wsl2]` in `%UserProfile%\.wslconfig`). The HTTP entry then works unchanged.
+
+Avoid binding RoastSim to `0.0.0.0` just for WSL, because the simulator has no login (see [Security](#security)).
+
+**Options:**
+* Hermes's default tool timeout (`timeout`, 300 s) is longer than a real-time `advance_time` wait, so you don't need to change it.
+* To limit what the assistant can do, filter the tools by their RoastSim names. Use `tools: {include: [get_state, get_roast_curve, get_report]}` for a read-only assistant. To block resets and raw commands, use `tools: {exclude: [reset_machine, roastsim_command]}`.
+
 ### Other clients
 
 Any MCP client works. Use the HTTP address for clients that support it, or run `roastsimd --mcp` as a stdio command. To try the tools by hand, the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) can connect to `http://127.0.0.1:8080/mcp` with the **Streamable HTTP** transport.
