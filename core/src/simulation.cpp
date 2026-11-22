@@ -469,7 +469,7 @@ void Simulation::detectEvents() {
             coreT += p.count * p.T_c;
             fc += p.count * p.fc_frac;
             sc += p.count * p.sc_frac;
-            if (p.spot_T > k.scorch_T) scorchingFrac += p.count;
+            if (p.scorchExcess(k) > 0) scorchingFrac += p.count;
         }
         if (n > 0) {
             meanT /= n;

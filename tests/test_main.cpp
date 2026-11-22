@@ -364,6 +364,20 @@ TEST(stir_pan_roast_and_scorch_without_stirring) {
     CHECK(still.report.agtron_sd > 4.0);
 }
 
+TEST(scorch_needs_a_hot_spot_not_just_a_dark_roast) {
+    // Fluidized beans roasted very dark (surface past 240 C) are dark, not burnt.
+    ScenarioResult dark = run(R"({"roaster":"air_roaster","bean":"colombia_washed","seed":3,"max_s":2400,
+        "actions":[{"at":0,"set":{"heat":100,"fan":75}},{"at":1,"charge":true},{"roast_at":530,"drop":true}]})");
+    CHECK(dark.report.valid);
+    CHECK(dark.report.agtron_ground < 32);
+    CHECK(dark.report.scorch_pct == 0);
+    // Starve the bed of air and the beans rest in the hot jet off the heater.
+    ScenarioResult stalled = run(R"({"roaster":"air_roaster","bean":"colombia_washed","seed":3,"max_s":2400,
+        "actions":[{"at":0,"set":{"heat":100,"fan":40}},{"at":1,"charge":true},{"roast_at":400,"drop":true}]})");
+    CHECK(stalled.report.valid);
+    CHECK(stalled.report.scorch_pct > 20);
+}
+
 TEST(darker_drop_means_darker_roast) {
     auto at = [](int delay) {
         std::string s = R"({"roaster":"popper_modded","bean":"colombia_washed","seed":9,"max_s":1500,

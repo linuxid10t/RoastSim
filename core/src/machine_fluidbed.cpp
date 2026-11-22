@@ -152,7 +152,11 @@ void FluidBedMachine::step(double dt, MachineInputs& in) {
             double hA = p.q_in;
             double e = hA / std::max(1e-12, h * p.area(k));
             p.q_in = hA * (T_airEff_ - p.T_s);
-            p.spot_T = p.T_s + std::min(1.0, 0.3 * e) * (T_airEff_ - p.T_s);
+            // Hot spot: a moving bed keeps the beans off the inlet screen. As
+            // it stalls, the bottom (most exposed) beans rest in the jet of
+            // inlet air straight off the heater, far hotter than the bed.
+            const double resting = (1.0 - q) * std::min(1.0, 0.5 * e);
+            p.spot_T = p.T_s + resting * std::max(0.0, T_in_ - p.T_s);
         }
         // Beans only cool the air while they are colder than it: they head
         // for the inlet air temperature.

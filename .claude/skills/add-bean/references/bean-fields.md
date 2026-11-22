@@ -72,5 +72,6 @@ Then adjust `fc_temp`: about +1 °C for moisture above 11.5 %, about −1 °C fo
 
 * `"tipping_dT": 32`: a soft, brittle lot that tips easily.
 * `"scorch_T": 230`: a delicate decaf that scorches on hot drum walls.
+* `"scorch_dT": 6`: a lot that marks easily, at a smaller hot spot (the default is 10 °C hotter than the rest of the surface). Scorch only ever comes from a local hot spot, so neither field makes an evenly roasted dark bean count as scorched.
 
 Prefer `kinetics_scale`, `moisture_pct`, `fc_temp` and size fields, which cover nearly every real difference between coffees.

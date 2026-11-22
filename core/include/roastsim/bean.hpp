@@ -69,7 +69,12 @@ struct Kinetics {
     double expansion_fc = 0.14;
     double expansion_sc = 0.05;
     // Defects
+    // Scorch is a local burn: a hot spot (bean on a hot drum wall, pan floor
+    // or inlet screen) must be above scorch_T *and* this much hotter than the
+    // rest of the bean's surface. A bean that is just roasted dark, evenly,
+    // does not scorch however hot it gets.
     double scorch_T = 240.0;          // C, contact hot-spot temperature that burns
+    double scorch_dT = 10.0;          // C, hot spot above the bean's own surface temperature
     double tipping_dT = 38.0;         // C surface-core gradient that burns tips while wet
 
     static Kinetics fromJson(const json::Value& v, const Kinetics& base);
@@ -132,6 +137,11 @@ struct Parcel {
     double beanMass() const { return m_dry + waterMass() + chaff; }
     double meanT(const Kinetics& k) const { return k.surface_frac * T_s + (1 - k.surface_frac) * T_c; }
     double devMean(const Kinetics& k) const { return k.surface_frac * dev_s + (1 - k.surface_frac) * dev_c; }
+    // C by which the hot spot is burning this bean right now (0 = not scorching).
+    double scorchExcess(const Kinetics& k) const {
+        double limit = T_s + k.scorch_dT > k.scorch_T ? T_s + k.scorch_dT : k.scorch_T;
+        return spot_T > limit ? spot_T - limit : 0.0;
+    }
 };
 
 struct BeanSummary {

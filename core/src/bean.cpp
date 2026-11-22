@@ -49,7 +49,7 @@ Kinetics Kinetics::fromJson(const json::Value& v, const Kinetics& base) {
     RS_K(agtron_min); RS_K(agtron_span); RS_K(agtron_tau); RS_K(organic_loss_max);
     RS_K(organic_loss_tau); RS_K(crack_sigma); RS_K(crack_energy_J); RS_K(fc_pops_per_bean);
     RS_K(sc_pops_per_bean); RS_K(expansion_dev); RS_K(expansion_fc); RS_K(expansion_sc);
-    RS_K(scorch_T); RS_K(tipping_dT);
+    RS_K(scorch_T); RS_K(scorch_dT); RS_K(tipping_dT);
 #undef RS_K
     return k;
 }
@@ -297,7 +297,7 @@ BatchStepResult BeanBatch::integrate(double dt, Rng& rng, const Environment& env
         }
 
         // --- defects
-        if (p.spot_T > k.scorch_T) p.scorch += dt * (p.spot_T - k.scorch_T) / (30.0 * 60.0);
+        p.scorch += dt * p.scorchExcess(k) / (30.0 * 60.0);
         double grad = p.T_s - p.T_c;
         if (moisture > 0.06 && grad > k.tipping_dT) p.tipping += dt * (grad - k.tipping_dT) / (10.0 * 60.0);
 

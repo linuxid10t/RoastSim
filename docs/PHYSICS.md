@@ -15,7 +15,7 @@ A batch is **N parcels** (default 200). Each parcel stands for a group of simila
 * **Yellowing integral** at 150 °C drives green → straw colour before browning.
 * **Cracks:** each parcel has its own first- and second-crack threshold (bean variety ± spread, shifted by its moisture and size). The fraction of beans past the threshold (σ = 1.6 °C inside a parcel) gives Poisson-distributed pops, which feed the sounds and the 3D view. Each crack also takes a small endothermic flash (moisture/CO₂ burst), part of the RoR "crash".
 * **Mass:** water loss plus organic loss `10 %·(1 − e^(−D/400))`. Expansion grows with development and cracks. Oil appears with second crack or deep development. Chaff detaches with drying and first crack.
-* **Defects:** *scorch* accumulates while the contact hot-spot temperature (`spot_T`) exceeds 240 °C. *Tipping* accumulates while the surface–core gradient exceeds 38 °C and the beans are still wet.
+* **Defects:** *scorch* is a local burn. It accumulates while a parcel's hot spot (`spot_T`) is above 240 °C (`scorch_T`) and at least 10 °C (`scorch_dT`) hotter than the rest of the bean's surface, at a rate set by how far it is past both. A bean counts as scorched once its index passes 0.35. The hot spot comes from contact with a hot drum wall or pan floor, weighted by how long the bean rests there, or, in a fluid bed or popper, from a stalled bed resting in the jet of inlet air off the heater. A bed that keeps moving has no hot spot, so an even, very dark roast is dark but not scorched. *Tipping* accumulates while the surface–core gradient exceeds 38 °C and the beans are still wet.
 
 ## Mixing
 
