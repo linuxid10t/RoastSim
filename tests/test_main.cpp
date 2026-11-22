@@ -459,8 +459,14 @@ TEST(power_switch_gates_the_machine) {
     CHECK(on.actuators[static_cast<int>(Control::Fan)] > 50);  // blower spun up
     CHECK(on.tele.heater_W > 100);
     CHECK(on.beans.T_mean > 30);
-    // The dial settings survived the off period; a reload powers down again.
+    // The dial settings survived the off period; a cold reset switches off and
+    // puts the dials back to the preset's defaults, and so does a reload.
     CHECK(on.controls[static_cast<int>(Control::Heat)] == 100);
+    sim.coldReset();
+    CHECK(!sim.powered());
+    for (const auto& cd : sim.roaster().controls) CHECK(sim.control(cd.id) == cd.snapToLevel(cd.def));
+    CHECK(sim.snapshot().actuators[static_cast<int>(Control::Fan)] == 0);
+    sim.setPower(true, "test");
     sim.load(*catalog().roaster("popper_modded"), *catalog().bean("colombia_washed"));
     CHECK(!sim.powered());
 }

@@ -32,7 +32,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `mark` | `event`: DRY, FCs, FCe, SCs, SCe, or free text (NOTE) | manual marks (stop auto-detection of that mark) |
 | `preheat` | `target_C` (or `target` in logger units) | fast-forwards the empty machine with a PI controller until ET holds the target; reply `simulated_s` |
 | `empty` | | discard beans, keep machine temperatures |
-| `reset` | | discard beans, machine back to ambient, history cleared |
+| `reset` | | discard beans, machine back to ambient and switched off, controls back to the roaster's defaults, history cleared |
 | `repair` | | replace a blown thermal fuse |
 | `env` | any of `ambient_C`, `humidity_rh`, `line_voltage`, `source_ohms`, `altitude_m`, `gas_pressure` | environment; reply `env` |
 | `fault` | `probe` (BT, ET, …), `type` (`none`, `open`, `short`, `spikes`, `drift`, `stuck`, `noisy`), `param` | probe fault injection |

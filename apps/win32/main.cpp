@@ -1861,7 +1861,7 @@ void onCommand(int id, int code) {
             break;
         case IDM_PREHEAT: preheat(); break;
         case IDM_RESET:
-            if (MessageBoxW(g.wnd, L"Cool the machine to room temperature and discard any beans?", L"Cold reset",
+            if (MessageBoxW(g.wnd, L"Switch the machine off, cool it to room temperature, discard any beans and put the controls back to their defaults?", L"Cold reset",
                             MB_YESNO | MB_ICONQUESTION) == IDYES) {
                 cmd1("reset");
                 refresh();

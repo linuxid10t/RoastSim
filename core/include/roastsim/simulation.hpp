@@ -125,7 +125,8 @@ public:
 
     // Master power switch: off drives every actuator toward 0 (the machine still
     // cools passively and the probes keep reading); the control settings are
-    // kept for when it is switched on again. Defaults to off, also after load().
+    // kept for when it is switched on again. Defaults to off, also after load()
+    // and coldReset().
     bool powered() const { return powered_; }
     void setPower(bool on, const std::string& origin);
 
@@ -134,7 +135,9 @@ public:
     bool coolEnd(const std::string& origin);
     void markEvent(const std::string& type, const std::string& origin);  // manual DRY/FCs/...
     void emptyMachine();   // discard beans, keep machine temperatures
-    void coldReset();      // discard beans and cool the machine to ambient
+    // Discard beans, cool the machine to ambient, switch it off and put every
+    // control back to the roaster's default setting.
+    void coldReset();
     // Fast-forwards the empty machine with a simple controller until the ET
     // probe holds `target_C`. Returns simulated seconds used, or -1 on failure.
     double preheat(double target_C, double maxSeconds = 2400);

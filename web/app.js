@@ -1005,7 +1005,7 @@ for (const b of document.querySelectorAll('[data-cmd]')) {
 }
 $('mReport').onclick = showReport;
 $('mPreheat').onclick = () => { $('preheatT').value = num(T(preheatC), 1); $('preheatDlg').showModal(); $('preheatT').select(); };
-$('mReset').onclick = async () => { if (confirm('Cool the machine to room temperature and discard any beans?')) await act({ cmd: 'reset' }); };
+$('mReset').onclick = async () => { if (confirm('Switch the machine off, cool it to room temperature, discard any beans and put the controls back to their defaults?')) await act({ cmd: 'reset' }); };
 $('mRepair').onclick = () => act({ cmd: 'repair' });
 $('mFaults').onclick = () => $('faultDlg').showModal();
 $('mSound').onclick = () => setSound(!snd);

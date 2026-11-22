@@ -164,7 +164,7 @@ Any MCP client works. Use the HTTP address for clients that support it, or run `
 | `set_environment` | Ambient temperature, humidity, wall voltage, supply resistance, altitude, gas pressure |
 | `inject_probe_fault` | Open, short, spikes, drift, stuck or noisy thermocouple, or none to clear it |
 | `set_speed` | Pause or resume the clock and set the speed (1-120x) |
-| `reset_machine` | `empty` (discard beans), `cold` (back to ambient), `repair` (replace a blown fuse) |
+| `reset_machine` | `empty` (discard beans), `cold` (back to ambient, power off, default controls), `repair` (replace a blown fuse) |
 | `roastsim_command` | Any [API command](API.md), for everything else, such as units, presets or history |
 
 Values are in °C, grams and percent, whatever units the UI shows. `get_state` reports the UI's units as `display_units`, so the assistant can answer in the units you use.

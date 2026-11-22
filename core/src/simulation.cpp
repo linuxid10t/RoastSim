@@ -63,12 +63,7 @@ void Simulation::load(const RoasterDef& roaster, const BeanSpec& bean, const Env
     machine_ = createMachine(roaster_);
     probes_.clear();
     for (const auto& pd : roaster_.probes) probes_.emplace_back(pd);
-    for (int i = 0; i < kControlCount; ++i) target_[i] = actual_[i] = 0;
-    for (const auto& cd : roaster_.controls) {
-        target_[static_cast<int>(cd.id)] = actual_[static_cast<int>(cd.id)] = cd.snapToLevel(cd.def);
-    }
-    powered_ = false;  // a freshly attached machine starts switched off
-    coldReset();
+    coldReset();  // switched off, controls at the preset's defaults
 }
 
 void Simulation::setBean(const BeanSpec& bean) { bean_ = bean; }
@@ -214,7 +209,12 @@ void Simulation::coldReset() {
     popsFc_ = popsSc_ = 0;
     cracks_.clear();
     nextHistory_ = nextRorSample_ = t_;
-    for (int i = 0; i < kControlCount; ++i) actual_[i] = powered_ ? target_[i] : 0.0;
+    // A cold machine is a switched-off one with its dials back at the preset's
+    // defaults. Silent: the event log was just cleared, and the reset note
+    // below (with power = off) tells front ends what happened.
+    powered_ = false;
+    for (int i = 0; i < kControlCount; ++i) target_[i] = actual_[i] = 0;
+    for (const auto& cd : roaster_.controls) target_[static_cast<int>(cd.id)] = cd.snapToLevel(cd.def);
     // First entry of the fresh event log: front ends start a new graph on it.
     addEvent("NOTE", "sim", "cold reset");
 }

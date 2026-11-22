@@ -279,9 +279,10 @@ TEST(ui_websocket_and_http) {
     json::Value bad = wsWait(s, buf, [](const json::Value& v) { return v.get("req", 0.0) == 3; });
     CHECK(!bad.getBool("ok", true));
 
-    // A paused machine can reset and switch power without advancing its clock.
+    // A paused machine can reset and switch power without advancing its clock;
+    // a cold reset switches it off.
     for (const char* cmd : {R"({"cmd":"pause","value":true})", R"({"cmd":"power","value":true})", R"({"cmd":"reset"})",
-                            R"({"cmd":"power","value":false})", R"({"cmd":"charge"})"})
+                            R"({"cmd":"charge"})"})
         CHECK(host->command(json::Value::parse(cmd), "test").getBool("ok", false));
     json::Value reset;
     json::Value charge = wsWait(s, buf, [&](const json::Value& v) {
@@ -289,7 +290,7 @@ TEST(ui_websocket_and_http) {
         if (v.get("detail", "") == "cold reset") reset = v;
         return v.get("event", "") == "CHARGE";
     });
-    CHECK(reset.getBool("power", false));
+    CHECK(!reset.getBool("power", true));
     CHECK(!charge.getBool("power", true));
     CHECK(reset.get("t", -1.0) == charge.get("t", -2.0));
     auto events = host->command(json::Value::parse(R"({"cmd":"events"})"), "test");

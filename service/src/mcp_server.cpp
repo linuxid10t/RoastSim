@@ -716,8 +716,8 @@ std::vector<Tool>& tools() {
                  "time_scale":{"type":"number","exclusiveMinimum":0,"maximum":120}}})J",
              false, false, setSpeed},
             {"reset_machine", "Reset the machine",
-             "empty: discard the beans, keep the machine hot. cold: discard the beans, cool the machine to ambient "
-             "and clear the history. repair: replace a blown thermal fuse.",
+             "empty: discard the beans, keep the machine hot. cold: discard the beans, cool the machine to ambient, "
+             "switch it off, put the controls back to the roaster's defaults and clear the history. repair: replace a blown thermal fuse.",
              R"J({"type":"object","properties":{"mode":{"type":"string","enum":["empty","cold","repair"]}},
                  "required":["mode"]})J",
              false, true, resetMachine},
