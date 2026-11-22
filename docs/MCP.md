@@ -155,7 +155,7 @@ Any MCP client works. Use the HTTP address for clients that support it, or run `
 | `select_bean` | Choose the coffee for the next charge |
 | `set_controls` | `heat`, `fan`, `drum`, `stir`, `voltage`, `cooling` in percent |
 | `set_power` | Master power switch |
-| `preheat` | Fast-forward the empty machine until ET holds a target |
+| `preheat` | Fast-forward the empty machine until ET holds a target (for drums and pans; on air roasters, which are usually charged cold, only a short warm-up) |
 | `charge` / `drop` / `end_cooling` | Beans in, beans out, end cooling |
 | `mark_event` | Mark DRY, FCs, FCe, SCs or SCe by hand, or add a note |
 | `advance_time` | Let time pass: some seconds, or until an event (`until: "FCs"`) or a BT temperature (`until_bt_C`). Returns the new events and the state. |

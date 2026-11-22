@@ -30,7 +30,7 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `drop` | | beans to the cooling tray |
 | `cool_end` | | end cooling (COOL event); otherwise automatic below 40 °C |
 | `mark` | `event`: DRY, FCs, FCe, SCs, SCe, or free text (NOTE) | manual marks (stop auto-detection of that mark) |
-| `preheat` | `target_C` (or `target` in logger units) | fast-forwards the empty machine with a PI controller until ET holds the target; reply `simulated_s` |
+| `preheat` | `target_C` (or `target` in logger units) | fast-forwards the empty machine with a PI controller until ET holds the target: for 90 s with the walls settled on drum and pan roasters, for 30 s on air roasters, which also stop early once the air stops warming at full heat; reply `simulated_s` and `reached` (false when ET never held the target) |
 | `empty` | | discard beans, keep machine temperatures |
 | `reset` | | discard beans, machine back to ambient and switched off, controls back to the roaster's defaults, history cleared |
 | `repair` | | replace a blown thermal fuse |

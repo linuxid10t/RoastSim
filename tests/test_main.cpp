@@ -471,6 +471,37 @@ TEST(power_switch_gates_the_machine) {
     CHECK(!sim.powered());
 }
 
+TEST(preheat_is_a_short_warmup_on_air_roasters) {
+    auto preheat = [](const char* roaster, double target, double* et) {
+        Simulation sim;
+        sim.load(*catalog().roaster(roaster), *catalog().bean("colombia_washed"));
+        sim.setPower(true, "test");
+        double used = sim.preheat(target);
+        *et = sim.snapshot().et;
+        return used;
+    };
+    double airEt = 0, popperEt = 0, drumEt = 0;
+    const double air = preheat("air_roaster", 180, &airEt);
+    const double popper = preheat("popper_modded", 180, &popperEt);
+    const double drum = preheat("drum_home_1kg", 190, &drumEt);
+    std::printf("    preheat: air %.0f s (ET %.1f), popper %.0f s (ET %.1f), drum %.0f s (ET %.1f)\n", air, airEt,
+                popper, popperEt, drum, drumEt);
+    CHECK_RANGE(air, 30, 240);     // the air is hot within a few minutes
+    CHECK_RANGE(popper, 30, 240);
+    CHECK(drum > 2 * air);         // a drum's metal takes much longer to settle
+    CHECK_RANGE(airEt, 176, 184);
+    CHECK_RANGE(popperEt, 176, 184);
+    CHECK_RANGE(drumEt, 186, 194);
+    // A target the air can't reach: stop once it levels off at full heat.
+    Simulation sim;
+    sim.load(*catalog().roaster("air_roaster"), *catalog().bean("colombia_washed"));
+    sim.setPower(true, "test");
+    bool reached = true;
+    CHECK_RANGE(sim.preheat(300, 2400, &reached), 30, 400);
+    CHECK(!reached);
+    CHECK(sim.events().back().detail.rfind("preheat stopped at ET", 0) == 0);
+}
+
 TEST(report_tracks_the_charged_batch) {
     Simulation sim;
     const auto& colombia = *catalog().bean("colombia_washed");

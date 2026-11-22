@@ -25,7 +25,8 @@ const char* const kProtocolVersions[] = {"2025-11-25", "2025-06-18", "2025-03-26
 constexpr const char* kInstructions =
     "RoastSim is a coffee roasting simulator: a virtual roaster with realistic bean physics. "
     "Units: temperatures in degrees C, rate of rise (RoR) in C/min, weights in grams, controls in percent (0-100).\n"
-    "A typical roast: list_presets, load_roaster (with a bean), set_power on, set_controls, preheat, charge, "
+    "A typical roast: list_presets, load_roaster (with a bean), set_power on, set_controls, preheat (drum "
+    "and pan roasters; air roasters such as poppers and fluid beds are usually charged cold), charge, "
     "then watch with advance_time and get_state while adjusting heat and fan; after first crack (FCs) let the "
     "roast develop (usually 15-25% of the total time), drop, and read get_report.\n"
     "The simulation keeps running in real time between tool calls. For careful control, pause it "
@@ -336,7 +337,11 @@ Outcome preheat(Host& host, const json::Value& a) {
     if (!run(host, c, r, err)) return toolError(err);
     json::Value v = obj();
     v["simulated_s"] = r["simulated_s"];
-    v["note"] = "Fast-forwarded until ET held the target. The heat control is left where the preheat controller ended.";
+    v["reached"] = r["reached"];
+    v["note"] = r.getBool("reached", false)
+                    ? "Fast-forwarded until ET held the target. The heat control is left where the preheat controller ended."
+                    : "ET did not reach the target: the heater is flat out and the air stopped warming (or the time "
+                      "limit ran out). Choose a lower target; on an air roaster, less fan also gives hotter air.";
     v["state"] = summaryState(host);
     return okData(v);
 }
@@ -646,7 +651,10 @@ std::vector<Tool>& tools() {
              "cools; the control settings are kept.",
              R"J({"type":"object","properties":{"on":{"type":"boolean"}},"required":["on"]})J", false, false, setPower},
             {"preheat", "Preheat",
-             "Fast-forward the empty, powered-on machine with a temperature controller until ET holds the target.",
+             "Fast-forward the empty, powered-on machine with a temperature controller until ET holds the target. "
+             "Drum and pan roasters need it: their metal stores heat, and the preheat waits until it has settled. "
+             "Air roasters (poppers, fluid beds) are usually charged cold; for them this is only a short warm-up "
+             "of the air, for profiles that start hot.",
              R"J({"type":"object","properties":{"target_C":{"type":"number","minimum":40,"maximum":450,
                  "description":"target environment temperature in C"}},"required":["target_C"]})J",
              false, false, preheat},

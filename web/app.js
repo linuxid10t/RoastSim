@@ -35,12 +35,14 @@ let graph = { start: -1, end: -1 };
 // graph but must not pop up a report or switch the machine off again.
 let liveFrom = Infinity;
 let eventSeq = 0;
+let coldResets = 0;        // cold resets / roaster loads seen; a report request outlived by one is dropped
 
 // ---------------------------------------------------------------- units
 // The API always speaks C / grams / metres; this shared setting (also used for
 // what Artisan receives, and saved by the simulator) only changes display/input.
 let units = { temperature: 'C', weight: 'g', altitude: 'm' };
 let unitKey = '';
+let shownBatch = -1;       // simulator's next batch (g) last put in the batch box
 const isF = () => units.temperature === 'F';
 const T = (c) => isF() ? c * 1.8 + 32 : c;              // temperature
 const fromT = (v) => isF() ? (v - 32) / 1.8 : v;
@@ -61,7 +63,12 @@ function applyUnits(s) {
   for (const el of document.querySelectorAll('.tu')) el.textContent = TU();
   $('batchUnit').textContent = units.weight;
   $('altUnit').textContent = AU();
-  $('batch').value = fmtW(s.next_batch_g);
+  showBatch(s.next_batch_g);
+}
+
+function showBatch(grams) {
+  shownBatch = grams;
+  $('batch').value = fmtW(grams);
 }
 
 // ---------------------------------------------------------------- transport
@@ -232,6 +239,9 @@ function onEvent(e) {
   // A cold reset or roaster load (from any front end) wipes the simulator's
   // history: start a new graph if the machine is on.
   if (type === 'NOTE' && e.detail === 'cold reset' && e.origin === 'sim') {
+    // The report belonged to the roast the reset just discarded.
+    coldResets++;
+    if ($('reportDlg').open) $('reportDlg').close();
     offRoast = [];
     startGraph((e.power ?? state?.power) ? e.t : -1);
     return;
@@ -345,6 +355,9 @@ function onState(s) {
     applyUnits(s);
     renderEvents();
   }
+  // Batch size changed elsewhere (a charge or batch command from the native
+  // app, Artisan, MCP...): show it, unless the box is being edited here.
+  if (s.next_batch_g > 0 && s.next_batch_g !== shownBatch && document.activeElement !== $('batch')) showBatch(s.next_batch_g);
   $('bt').textContent = t1(s.bt);
   $('et').textContent = t1(s.et);
   $('ror').textContent = s.t_roast > 0 ? R(s.ror_bt).toFixed(1) : '--';
@@ -641,7 +654,9 @@ async function drawBeans() {
 
 // ---------------------------------------------------------------- report
 async function showReport() {
+  const resets = coldResets;
   const r = await send({ cmd: 'report' });
+  if (coldResets !== resets) return;  // the simulator was reset meanwhile: that roast is gone
   if (!r.valid) { alert('No roast yet. Charge some beans first.'); return; }
   $('reportBody').innerHTML = `
     <table>

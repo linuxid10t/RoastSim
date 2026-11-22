@@ -370,10 +370,12 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         if (cmd.has("target") && !cmd.has("target_C")) t = fromLoggerUnits(t);
         if (!(t > 40 && t < 450)) return fail("preheat target out of range");
         if (!sim_.powered()) return fail("the machine is powered off - switch it on first");
-        double used = sim_.preheat(t);
+        bool reached = false;
+        double used = sim_.preheat(t, 2400, &reached);
         if (used < 0) return fail("cannot preheat now (beans in the roaster, or no heat control)");
         json::Value v = ok();
         v["simulated_s"] = r1(used, 0);
+        v["reached"] = reached;
         return v;
     }
     if (c == "repair") {

@@ -139,8 +139,12 @@ public:
     // control back to the roaster's default setting.
     void coldReset();
     // Fast-forwards the empty machine with a simple controller until the ET
-    // probe holds `target_C`. Returns simulated seconds used, or -1 on failure.
-    double preheat(double target_C, double maxSeconds = 2400);
+    // probe holds `target_C`: for 90 s with the walls settled on drums and
+    // pans, for 30 s on air roasters (a short warm-up; they are usually
+    // charged cold). An air roaster whose air stops warming at full heat
+    // stops there. Returns simulated seconds used, or -1 on failure;
+    // `reached` says whether ET got to and held the target.
+    double preheat(double target_C, double maxSeconds = 2400, bool* reached = nullptr);
     void repair();
     bool setProbeFault(const std::string& probeId, ProbeFault f, double param = 0);
 

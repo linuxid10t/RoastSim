@@ -190,6 +190,7 @@ struct App {
     std::string unitKey;         // detects unit changes made anywhere (menu, web UI, Artisan TC4)
     double preheatC = 200;       // preheat target, kept in C
     bool unitsShown = false;
+    double shownBatch = -1;      // simulator's next batch (g) last put in the batch box
     std::vector<rs_sample> hist;
     uint64_t histNext = 0;
     int lastPhase = -1;
@@ -500,6 +501,11 @@ void selectPreset(HWND combo, const std::vector<std::string>& ids, const std::st
     }
 }
 
+void showBatch(double grams) {
+    g.shownBatch = grams;
+    SetWindowTextW(g.batchEdit, fmtW(grams).c_str());
+}
+
 void applyRoasterDef() {
     Value st = Value::object();
     st["cmd"] = "state";
@@ -538,7 +544,7 @@ void applyRoasterDef() {
             ShowWindow(g.sliderValues[i], SW_SHOW);
         }
     }
-    SetWindowTextW(g.batchEdit, fmtW(s.get("next_batch_g", 100.0)).c_str());
+    showBatch(s.get("next_batch_g", 100.0));
     selectPreset(g.roasterCombo, g.roasterIds, g.currentRoaster);
     selectPreset(g.beanCombo, g.beanIds, s["bean"].get("id", ""));
     g.beanX.clear();
@@ -567,7 +573,7 @@ void populateLists() {
 // setting changes, from here or from another front end).
 void applyUnits() {
     setText(g.batchUnit, widen(wUnit()));
-    SetWindowTextW(g.batchEdit, fmtW(g.st.next_batch_g > 0 ? g.st.next_batch_g : g.st.batch_g).c_str());
+    showBatch(g.st.next_batch_g > 0 ? g.st.next_batch_g : g.st.batch_g);
     invalidateRight();
 }
 
@@ -728,6 +734,15 @@ std::wstring alarmText(uint32_t a) {
     return s.empty() ? L"none" : s;
 }
 
+// Closes an open roast report (a message box owned by the main window). The
+// UI timer keeps running inside the box's modal loop, so a cold reset seen
+// there can close it.
+void closeReport() {
+    HWND box = nullptr;
+    while ((box = FindWindowExW(nullptr, box, L"#32770", L"Roast report")) != nullptr)
+        if (GetWindow(box, GW_OWNER) == g.wnd) PostMessageW(box, WM_CLOSE, 0, 0);
+}
+
 void showReport() {
     Value r = cmd1("report");
     if (!r.getBool("valid", false)) {
@@ -799,9 +814,13 @@ void refresh() {
         g.unitsShown = true;
         applyUnits();
     }
-    // History: the shell keeps its own copy of every sample since power-on (the
-    // simulator trims pre-charge history at CHARGE). Reload only when the
-    // simulator's history was cleared (cold reset or roaster load, from any front end).
+    // Batch size changed elsewhere (a charge or batch command from the web UI,
+    // Artisan, MCP...): show it, unless the box is being edited here.
+    if (g.st.next_batch_g > 0 && g.st.next_batch_g != g.shownBatch && GetFocus() != g.batchEdit)
+        showBatch(g.st.next_batch_g);
+    // History: the shell keeps its own copy of every sample since power-on.
+    // Reload only when the simulator's history was cleared (cold reset or
+    // roaster load, from any front end).
     if (g.st.history_end < g.histNext) {
         g.hist.clear();
         g.histNext = 0;
@@ -831,6 +850,7 @@ void refresh() {
             // simulator's history: start a new graph if the machine is on.
             std::string detail = e.get("detail", "");
             if (type == "NOTE" && detail == "cold reset" && e.get("origin", "") == "sim") {
+                closeReport();  // it belonged to the roast the reset just discarded
                 g.offRoast.clear();
                 startGraph(powered ? t : -1);
                 continue;

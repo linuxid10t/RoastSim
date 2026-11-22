@@ -304,13 +304,23 @@ struct AudioSynth::Impl {
         if (changed) spawn(3000.0f, 3.0f, 0.003f, 0.35f, 0, true);
         lastTeleAlarms = t.alarms;
 
-        scheduleCracks(inMachine);
+        scheduleCracks(s.t_session);
     }
 
-    void scheduleCracks(bool inMachine) {
-        auto cracks = host.cracksSince(lastCrack, 600);
+    void scheduleCracks(double now) {
+        auto all = host.cracksSince(lastCrack, 8192);
+        if (all.empty()) return;
+        lastCrack = all.back().seq;
+        // Only cracks the clock could have reached since the last refresh at
+        // the current speed: a fast-forward (MCP advance_time, preheat, a
+        // step command) jumps minutes ahead between two refreshes, and
+        // replaying every crack it passed would sound as one long stale burst.
+        // Generous, since audio is rendered in bursts rather than evenly.
+        const double maxAge = 1.0 + (host.paused() ? 0.0 : 0.5 * host.timeScale());
+        std::vector<CrackEvent> cracks;
+        for (const auto& c : all)
+            if (c.t >= now - maxAge) cracks.push_back(c);
         if (cracks.empty()) return;
-        lastCrack = cracks.back().seq;
         // At high sim speed or peak first crack in a big batch there can be
         // hundreds per refresh; voice a sample of them, a little louder each.
         const std::size_t maxVoiced = 40;
@@ -341,7 +351,6 @@ struct AudioSynth::Impl {
                     spawn(f * 1.15f, 1.6f, 0.002f, 0.25f * level, delay + static_cast<int>((0.005f + 0.015f * noise.unit()) * fs), true);
             }
         }
-        (void)inMachine;
     }
 
     static float clamp01f(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }

@@ -146,11 +146,9 @@ bool Simulation::charge(double batch_g, const std::string& origin, std::string* 
     tpMinT_ = -1;
     popsFc_ = popsSc_ = 0;
     organicRate_ = 0;
-    // Keep one minute of pre-charge history so graphs show the drop into TP.
-    while (!history_.empty() && history_.front().t < t_ - 60.0) {
-        history_.pop_front();
-        ++historyBase_;
-    }
+    // Pre-charge history (preheat) stays, at negative roast times: front ends
+    // may not have read it yet, e.g. when a preheat fast-forward is followed
+    // straight away by a charge from MCP or a script.
     for (auto& h : history_) h.t_roast = static_cast<float>(h.t - t_);
     addEvent("CHARGE", origin);
     chargeSeq_ = seq_;
@@ -234,7 +232,8 @@ bool Simulation::setProbeFault(const std::string& probeId, ProbeFault f, double 
     return false;
 }
 
-double Simulation::preheat(double target_C, double maxSeconds) {
+double Simulation::preheat(double target_C, double maxSeconds, bool* reachedOut) {
+    if (reachedOut) *reachedOut = false;
     if (beanLoc_ == BeanLocation::Machine || !machine_) return -1;
     if (!powered_) return -1;  // a switched-off machine cannot heat
     Control ctl = roaster_.hasControl(Control::Heat) ? Control::Heat : Control::Voltage;
@@ -250,24 +249,56 @@ double Simulation::preheat(double target_C, double maxSeconds) {
     int ei = probeIndex("ET");
     if (ei < 0) return -1;
     double I = target_[static_cast<int>(ctl)] / 100.0;
+    // Drums and pans store heat in metal: wait until the walls stop warming.
+    // Air roasters have little of it, so a warm-up is done once the air holds
+    // the target for a short while.
+    const bool air = roaster_.kind == RoasterKind::FluidBed;
+    const double holdFor = air ? 30.0 : 90.0;
+    // Hot air follows the heater within seconds, so an air roaster's
+    // controller can close the last few degrees ten times faster; it only
+    // integrates while the heater is not flat out, so it does not overshoot.
+    const double ki = air ? 0.004 : 0.0004;
     double stable = 0, used = 0, prevWall = machine_->telemetry().wall_C;
+    double flatOut = 0, flatOutEt = 0;  // seconds at full heat, and ET when that run began
+    bool reached = false;
     while (used < maxSeconds) {
         double et = probes_[static_cast<std::size_t>(ei)].trueTemp();
         double err = target_C - et;
-        I = clamp01(I + 0.0004 * err * kStep);
+        const double raw = 0.04 * err + I;
+        if (!air || (raw > 0 && raw < 1)) I = clamp01(I + ki * err * kStep);
         double u = clamp01(0.04 * err + I);
+        // An air roaster at full heat whose air has stopped warming will not
+        // get any hotter: stop there instead of waiting out maxSeconds.
+        if (air && u >= 0.999) {
+            if (flatOut == 0) flatOutEt = et;
+            flatOut += kStep;
+            if (flatOut >= 30) {
+                if (et - flatOutEt < 0.5) break;
+                flatOut = 0;
+            }
+        } else {
+            flatOut = 0;
+        }
         target_[static_cast<int>(ctl)] = heater->snapToLevel(u * 100.0);
         stepOnce(kStep);
         used += kStep;
         double wall = machine_->telemetry().wall_C;
         double wallRate = std::fabs(wall - prevWall) / kStep;
         prevWall = wall;
-        if (std::fabs(err) < 1.5 && wallRate < 0.05) stable += kStep;
+        if (std::fabs(err) < 1.5 && (air || wallRate < 0.05)) stable += kStep;
         else stable = 0;
-        if (stable > 90) break;
+        if (stable > holdFor) {
+            reached = true;
+            break;
+        }
     }
     if (heater->levels == 0) target_[static_cast<int>(ctl)] = std::round(target_[static_cast<int>(ctl)]);
-    addEvent("NOTE", "preheat", "preheated to " + json::formatNumber(target_C, 1));
+    const double et = probes_[static_cast<std::size_t>(ei)].trueTemp();
+    addEvent("NOTE", "preheat",
+             reached ? "preheated to " + json::formatNumber(target_C, 1)
+                     : "preheat stopped at ET " + json::formatNumber(et, 1) + " (target " +
+                           json::formatNumber(target_C, 1) + ")");
+    if (reachedOut) *reachedOut = reached;
     return used;
 }
 

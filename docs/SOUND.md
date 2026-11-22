@@ -36,7 +36,7 @@ The beans' own sound changes through the roast. Green, wet beans thud dully; dry
 | first vs second crack | FC: woody snap with a body. SC: fine, fast, high crackle (like crisped rice), often in tiny clusters |
 | where it happens | inside a drum cracks are muffled (×0.8, duller), under a stir-pan dome ×0.65; in a popper and in the cooling tray they're heard in the open |
 
-Crack timing comes from the simulation, so the density of the crackle (a few pops at the start of first crack, a rolling chorus at its peak, a roar from a 5 kg batch) is real roast behaviour, not a script. At high simulation speeds the crack stream is thinned and slightly boosted, so it stays listenable.
+Crack timing comes from the simulation, so the density of the crackle (a few pops at the start of first crack, a rolling chorus at its peak, a roar from a 5 kg batch) is real roast behaviour, not a script. At high simulation speeds the crack stream is thinned and slightly boosted, so it stays listenable. Cracks skipped over by a fast-forward (preheat, MCP `advance_time`, a `step` command) are not played afterwards; only those from about the last second of simulated time (more at higher speeds) are voiced.
 
 ## Levels
 

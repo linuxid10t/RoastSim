@@ -391,6 +391,56 @@ TEST(sound_follows_the_machine) {
     host.stop();
 }
 
+TEST(sound_skips_cracks_passed_in_a_fast_forward) {
+    HostConfig cfg;
+    cfg.data_dir = rstest::dataDir();
+    cfg.http_enabled = cfg.modbus_enabled = false;
+    cfg.roaster = "popper_modded";
+    cfg.seed = 5;
+    Host host(cfg);
+    std::string err;
+    CHECK(host.start(&err));
+    auto send = [&](const char* text) { return host.command(json::Value::parse(text), "test"); };
+    send(R"({"cmd":"pause","value":true})");
+    send(R"({"cmd":"power","value":true})");
+    host.setControl(Control::Heat, 100, "test");
+    AudioSynth synth(host, 22050);
+    AudioMix m;
+    m.machine = 0;  // cracks only
+    synth.setMix(m);
+    std::vector<float> buf(11025);
+    auto peak = [&] {
+        synth.render(buf.data(), static_cast<int>(buf.size()));
+        double p = 0;
+        for (float v : buf) p = std::max(p, static_cast<double>(std::fabs(v)));
+        return p;
+    };
+    CHECK(send(R"({"cmd":"charge"})").getBool("ok", false));
+    // Fast-forward the way MCP's advance_time does (1 s steps, no audio
+    // rendered meanwhile) until first crack is under way.
+    auto step = [&] { send(R"({"cmd":"step","seconds":1})"); };
+    int i = 0;
+    for (; i < 1200 && host.crackSeq() < 20; ++i) step();
+    CHECK(host.crackSeq() >= 20);
+    peak();  // catch up
+    // Cracks happening now are heard.
+    std::uint64_t before = host.crackSeq();
+    step();
+    CHECK(host.crackSeq() > before);
+    CHECK(peak() > 0.05);
+    // Fast-forward through the rest of first crack until the beans have been
+    // quiet for a few seconds: everything it passed is stale by then.
+    std::uint64_t passed = host.crackSeq();
+    for (int quiet = 0; i < 1200 && quiet < 4; ++i) {
+        before = host.crackSeq();
+        step();
+        quiet = host.crackSeq() == before ? quiet + 1 : 0;
+    }
+    CHECK(host.crackSeq() > passed + 50);  // plenty were skipped over
+    CHECK(peak() < 0.01);                  // and none replays as a burst
+    host.stop();
+}
+
 TEST(roaster_load_resets_wall_voltage) {
     HostConfig cfg;
     cfg.data_dir = rstest::dataDir();
