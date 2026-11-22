@@ -13,6 +13,8 @@ The assistant drives the same machine as everything else. If the Win32 app or we
 
 `roastsimd --mcp` first looks for a RoastSim that is already running on the HTTP port (8080, or `--http-port`). If it finds one, it passes messages to it, so the AI drives the simulator you have open. If none is running, it starts its own simulator with the usual web UI and Modbus servers, and logs a line saying so on stderr. To choose explicitly, use `--mcp-connect HOST:PORT` (always bridge, and fail if nothing is there) or `--mcp-embedded` (always run its own).
 
+To watch an AI roast in the Win32 app, **start the app before the AI client**. If the client starts `roastsimd --mcp` first, `roastsimd` runs its own simulator and takes port 8080. An app opened later can't get the port, so it runs a separate simulator, and the window doesn't show the roast the AI is running.
+
 ### Claude Code
 
 The repository's [`.mcp.json`](../.mcp.json) adds `roastsim` as a project server, so Claude Code offers it when you open this folder. Approve it once when Claude Code asks. It connects to the HTTP address, so start the Win32 app or `roastsimd` first. If RoastSim wasn't running when the session started, start it and reconnect the server from `/mcp`.
@@ -59,18 +61,85 @@ mcp_servers:
     args: ["--mcp"]
 ```
 
-Then run `/reload-mcp` in a Hermes chat, or restart Hermes. The tools appear with a server prefix, for example `mcp__roastsim__advance_time`.
-
-**Hermes in WSL2:** under WSL's default networking, `127.0.0.1` inside WSL is not the Windows machine, so the HTTP address can't reach a RoastSim running on Windows. Use one of these instead:
-
-* Use the stdio entry with the Windows path to `roastsimd.exe`, for example `/mnt/c/path/to/RoastSim2026/build/roastsimd.exe`. WSL runs Windows programs directly. `roastsimd.exe` then runs on Windows, where it can reach the RoastSim app on `127.0.0.1:8080`.
-* Or turn on mirrored networking (`networkingMode=mirrored` under `[wsl2]` in `%UserProfile%\.wslconfig`). The HTTP entry then works unchanged.
-
-Avoid binding RoastSim to `0.0.0.0` just for WSL, because the simulator has no login (see [Security](#security)).
+Then run `/reload-mcp` in a Hermes chat, or restart Hermes. The tools appear with a server prefix, for example `mcp__roastsim__advance_time`. If Hermes runs in WSL2, see [Clients in WSL2](#clients-in-wsl2).
 
 **Options:**
 * Hermes's default tool timeout (`timeout`, 300 s) is longer than a real-time `advance_time` wait, so you don't need to change it.
 * To limit what the assistant can do, filter the tools by their RoastSim names. Use `tools: {include: [get_state, get_roast_curve, get_report]}` for a read-only assistant. To block resets and raw commands, use `tools: {exclude: [reset_machine, roastsim_command]}`.
+
+### DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) connects to each MCP server through one `@deepseek-ai/dsh-mcp-client` plugin entry. Add an entry to your profile's `cordis.patch.yml` (profiles live under `$DSH_HOME/profiles`). This entry uses the HTTP address:
+
+```yaml
+- id: mcp-roastsim
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: roastsim
+    transport: streamable-http
+    url: http://127.0.0.1:8080/mcp
+    toolCallTimeoutMs: 90000
+```
+
+For stdio, replace the `transport` and `url` lines with `transport: stdio`, `command:` the path to `roastsimd.exe`, and `args: ['--mcp']`.
+
+* Keep `toolCallTimeoutMs`. The default of 60 s is too close to the 50 s a real-time `advance_time` wait can take.
+* Restart `dsh` after editing the file. `dsh --profile web --dump-config` shows whether the entry loaded.
+* The tools appear as `mcp__roastsim__<tool>`.
+* `dsh` has no per-server tool allow or deny lists. To keep an agent away from tools such as `reset_machine`, use its agent-level tool guards.
+* If `dsh` runs in WSL2, see [Clients in WSL2](#clients-in-wsl2).
+
+### ZCode
+
+[ZCode](https://zcode.z.ai/en/docs/mcp-services) reads servers from `mcp.servers` in `~/.zcode/cli/config.json` for all projects, or in `<project>/.zcode/config.json` for one project. This is the stdio entry:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "roastsim": {
+        "command": "C:/path/to/RoastSim2026/build/roastsimd.exe",
+        "args": ["--mcp"],
+        "env": {}
+      }
+    }
+  }
+}
+```
+
+To use the HTTP address instead, add it in **Settings » MCP Servers » New MCP Server**: choose type **HTTP** and enter `http://127.0.0.1:8080/mcp`.
+
+* `"enable": false` in the entry turns the server off.
+* If a `.zcode` config defines any servers, ZCode ignores `.agents/mcp.json` at the same level.
+* ZCode doesn't read this repository's `.mcp.json`.
+
+### LM Studio
+
+[LM Studio](https://lmstudio.ai/docs/app/mcp) reads `mcp.json` (**Program » Install » Edit mcp.json**) in the same layout as Cursor:
+
+```json
+{
+  "mcpServers": {
+    "roastsim": {
+      "command": "C:/path/to/RoastSim2026/build/roastsimd.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+* **Choose a model built for tool use.** A roast takes dozens of tool calls, so use a large enough context window that the model keeps the start of the roast in view.
+* **Pause the clock first.** Local models can take a while to answer, so have the model call `set_speed` with `paused: true` before it charges. Otherwise the roast runs on while the model thinks.
+* **Tool call prompts:** LM Studio asks you to confirm tool calls. Allowing `get_state` and `advance_time` permanently saves many clicks.
+
+### Clients in WSL2
+
+The HTTP address only accepts connections from the same machine. Under WSL's default networking, `127.0.0.1` inside WSL is not the Windows machine, so a client in WSL2 can't reach a RoastSim running on Windows at that address. Use one of these instead:
+
+* **stdio:** use the client's stdio entry with the Windows path to `roastsimd.exe`, for example `/mnt/c/path/to/RoastSim2026/build/roastsimd.exe`. WSL runs Windows programs directly. `roastsimd.exe` then runs on Windows, where it can reach the RoastSim app on `127.0.0.1:8080`.
+* **Mirrored networking:** set `networkingMode=mirrored` under `[wsl2]` in `%UserProfile%\.wslconfig`. The HTTP address then works unchanged.
+
+Avoid binding RoastSim to `0.0.0.0` just for WSL, because the simulator has no login (see [Security](#security)).
 
 ### Other clients
 
