@@ -13,6 +13,8 @@ The assistant drives the same machine as everything else. If the Win32 app or we
 
 `roastsimd --mcp` first looks for a RoastSim that is already running on the HTTP port (8080, or `--http-port`). If it finds one, it passes messages to it, so the AI drives the simulator you have open. If none is running, it starts its own simulator with the usual web UI and Modbus servers, and logs a line saying so on stderr. To choose explicitly, use `--mcp-connect HOST:PORT` (always bridge, and fail if nothing is there) or `--mcp-embedded` (always run its own).
 
+A bridge ends within about 15 seconds after the RoastSim it passes messages to goes away, for example when you close the app, so it doesn't linger. Some clients start a stdio server again when it exits. With plain `--mcp`, a restart while RoastSim is closed starts its own simulator, which then holds the web and Modbus ports the app needs. For such clients, use `--mcp-connect 127.0.0.1:8080`, or connect over HTTP instead (below).
+
 To watch an AI roast in the Win32 app, **start the app before the AI client**. If the client starts `roastsimd --mcp` first, `roastsimd` runs its own simulator and takes port 8080. An app opened later can't get the port, so it runs a separate simulator, and the window doesn't show the roast the AI is running.
 
 ### Claude Code

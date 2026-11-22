@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -287,6 +288,27 @@ int runMcp(HostConfig cfg, const std::string& connect, bool embeddedOnly) {
         int status = httpPost(host, port, "/mcp", R"({"jsonrpc":"2.0","id":0,"method":"ping"})", 5000, reply, err);
         if (status == 200 && reply.find("\"result\"") != std::string::npos) {
             std::fprintf(stderr, "roastsimd: MCP bridge to the RoastSim at http://%s:%d/mcp\n", host.c_str(), port);
+            // The bridge only exists to reach that RoastSim. Once it is gone
+            // (its window closed, the daemon stopped), end too rather than
+            // linger as an orphan answering "not reachable": the MCP client
+            // sees the server exit. Several misses in a row, so a RoastSim
+            // that is briefly busy (a long fast-forward) is not mistaken for gone.
+            std::thread([host, port] {
+                int misses = 0;
+                while (!g_quit) {
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
+                    std::string r, e;
+                    int st = httpPost(host, port, "/mcp", R"({"jsonrpc":"2.0","id":0,"method":"ping"})", 3000, r, e);
+                    misses = st == 200 ? 0 : misses + 1;
+                    if (misses >= 5) {
+                        std::fprintf(stderr, "roastsimd: the RoastSim at http://%s:%d has gone; MCP bridge exiting\n",
+                                     host.c_str(), port);
+                        std::fflush(stderr);
+                        std::fflush(stdout);
+                        std::_Exit(0);  // the main thread is blocked reading stdin
+                    }
+                }
+            }).detach();
             mcpLoop([&](const json::Value& msg, const std::string& line) {
                 std::string body, e;
                 int code = httpPost(host, port, "/mcp", line, 120000, body, e);
