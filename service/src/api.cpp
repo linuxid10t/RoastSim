@@ -89,9 +89,11 @@ json::Value Host::stateJson(bool full) const {
     double batch, scale, nominalVoltage;
     std::uint64_t catalogRevision, roasterRevision;
     bool paused, customRoaster;
+    std::uint64_t historyStart;
     {
         std::lock_guard<std::mutex> lk(mu_);
         s = sim_.snapshot();
+        historyStart = sim_.historyBase();
         if (full) def = sim_.roaster().describe();
         nominalVoltage = sim_.roaster().nominalLineVoltage();
         catalogRevision = catalogRevision_;
@@ -205,6 +207,10 @@ json::Value Host::stateJson(bool full) const {
     v["power"] = s.powered;
     v["logger_connected"] = loggerConnected();
     v["event_seq"] = static_cast<double>(s.last_event_seq);
+    // Index of the oldest history sample the simulator still holds. A cold
+    // reset or roaster load moves it past every earlier sample: front ends
+    // that keep their own copy drop anything below it.
+    v["history_start"] = static_cast<double>(historyStart);
     v["units"] = unitsJson();
     return v;
 }

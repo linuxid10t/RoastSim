@@ -233,6 +233,11 @@ std::uint64_t Host::historyEnd() const {
     return sim_.historyBase() + sim_.history().size();
 }
 
+std::uint64_t Host::historyStart() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sim_.historyBase();
+}
+
 bool Host::setControl(Control c, double pct, const std::string& origin) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!sim_.roaster().hasControl(c)) return false;

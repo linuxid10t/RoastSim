@@ -541,7 +541,8 @@ void NetServer::Impl::periodic(Conn& c, double now) {
                 arr.push(a);
             }
             st["history"] = arr;
-            st["history_from"] = static_cast<double>(c.historyNext);
+            // Index of the first row sent (after a reset it can be past the one asked for).
+            st["history_from"] = static_cast<double>(next - hist.size());
             c.historyNext = next;
         }
         c.out += wsFrame(st.dump());

@@ -18,7 +18,9 @@ class Probe {
 public:
     explicit Probe(const ProbeDef& def) : def_(def) {}
 
-    void reset(double T) { T_ = T; drift_ = 0; }
+    // Also resets the reading, so it is right even before the next step
+    // (a cold reset while the clock is paused).
+    void reset(double T) { T_ = reading_ = T; drift_ = 0; }
     void step(double dt, double T_env, double immersion, Rng& rng);
     // Reading as a logger would see it. Open circuit returns -1 (Artisan's "no value").
     double read() const { return reading_; }

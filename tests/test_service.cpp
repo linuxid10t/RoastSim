@@ -441,6 +441,44 @@ TEST(sound_skips_cracks_passed_in_a_fast_forward) {
     host.stop();
 }
 
+TEST(cold_reset_starts_a_clean_graph_even_while_paused) {
+    HostConfig cfg;
+    cfg.data_dir = rstest::dataDir();
+    cfg.roaster = "air_roaster";
+    cfg.http_enabled = cfg.modbus_enabled = false;
+    Host host(cfg);
+    const bool started = host.start(nullptr);
+    CHECK(started);
+    if (!started) return;
+    auto send = [&](const char* text) {
+        CHECK(host.command(json::Value::parse(text), "test").getBool("ok", false));
+    };
+    send(R"({"cmd":"pause","value":true})");
+    send(R"({"cmd":"power","value":true})");
+    send(R"({"cmd":"set","controls":{"heat":100,"fan":75}})");
+    send(R"({"cmd":"charge"})");
+    send(R"({"cmd":"step","seconds":240})");
+    const double ambient = host.stateJson(false)["env"].get("ambient_C", 0.0);
+    CHECK(host.stateJson(false).get("bt", 0.0) > 150);
+    const double endBefore = static_cast<double>(host.historyEnd());
+    send(R"({"cmd":"reset"})");  // the clock does not move
+    const json::Value st = host.stateJson(false);
+    CHECK_RANGE(st.get("bt", 0.0), ambient - 1, ambient + 1);  // probes read the cold machine at once
+    CHECK(st.get("history_start", 0.0) >= endBefore);           // every earlier sample is behind it
+    const auto evs = host.eventsSince(0);
+    CHECK(!evs.empty() && evs.front().detail == "cold reset");
+    CHECK_RANGE(evs.front().bt, ambient - 1, ambient + 1);
+    // The next roast, still at the same paused moment, only has new samples.
+    send(R"({"cmd":"power","value":true})");
+    send(R"({"cmd":"charge"})");
+    CHECK_RANGE(host.eventsSince(0).back().bt, ambient - 1, ambient + 1);  // CHARGE at room temperature
+    send(R"({"cmd":"step","seconds":5})");
+    std::uint64_t next = 0;
+    for (const auto& h : host.historySince(static_cast<std::uint64_t>(st.get("history_start", 0.0)), &next))
+        CHECK(h.bt < 60);
+    host.stop();
+}
+
 TEST(roaster_load_resets_wall_voltage) {
     HostConfig cfg;
     cfg.data_dir = rstest::dataDir();

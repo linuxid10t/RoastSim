@@ -95,6 +95,9 @@ typedef struct rs_state {
     int powered;                        /* master power switch (0 = off, the default) */
     /* --- added in API 1.2 --- */
     double eta_dry_s, eta_fc_s;         /* projected roast seconds to DRY / first crack; -1 = n/a, -2 = stalling (not reached at this heat) */
+    /* --- added in API 1.3 --- */
+    uint64_t history_start;             /* index of the oldest history sample still held; a cold reset or
+                                           roaster load moves it past all earlier ones: drop yours below it */
 } rs_state;
 
 typedef struct rs_sample {

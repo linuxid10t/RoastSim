@@ -152,6 +152,7 @@ int rs_host_get_state(rs_host* h, rs_state* caller) {
     o->powered = s.powered ? 1 : 0;
     o->eta_dry_s = s.eta_dry_s;
     o->eta_fc_s = s.eta_fc_s;
+    o->history_start = h->host->historyStart();
     std::uint32_t size = caller->struct_size;
     std::memcpy(caller, &full, std::min<std::size_t>(size, sizeof full));
     caller->struct_size = size;

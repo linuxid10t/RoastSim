@@ -16,7 +16,8 @@ let ws = null, reqId = 0, serverPollTimer;
 const pending = new Map();
 let state = null, def = null, defLoading = false, defRevision = 0;
 let catalog = null, catalogRequest = null;
-let history = [];          // rows: arrays in COLS order, kept since power-on
+let history = [];          // rows: arrays in COLS order plus the sample index, kept since power-on
+let historyStart = 0;      // simulator's history_start last seen
 let events = [];           // events of the current graph's roast
 let offRoast = [];         // roast charged while the machine is off (no graph yet)
 let dragging = new Set();
@@ -78,7 +79,7 @@ function connect() {
   ws = socket;
   socket.binaryType = 'arraybuffer';
   socket.onopen = async () => {
-    history = []; events = []; offRoast = []; graph = { start: -1, end: -1 };
+    history = []; historyStart = 0; events = []; offRoast = []; graph = { start: -1, end: -1 };
     eventSeq = 0;
     renderEvents();
     if (!await loadLists()) return;
@@ -338,8 +339,17 @@ function renderProgress() {
 // ---------------------------------------------------------------- state
 function onState(s) {
   if (s.history) {
-    for (const r of s.history) history.push(r);
+    // Each row also carries its sample index (column 10) for the check below.
+    s.history.forEach((r, i) => { r.push(s.history_from + i); history.push(r); });
     if (history.length > 20000) history.splice(0, history.length - 20000);
+  }
+  // A cold reset or roaster load (from any front end or MCP) moves the
+  // simulator's history start past every earlier sample: those belong to the
+  // discarded roast and must not reach the next graph. Paused, the reset and
+  // the next power-on share a timestamp, so time alone can't tell them apart.
+  if (s.history_start > historyStart) {
+    historyStart = s.history_start;
+    history = history.filter(r => r[10] >= historyStart);
   }
   state = s;
   $('mEditRoaster').disabled = !s.roaster.custom;

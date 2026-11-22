@@ -101,7 +101,8 @@ public:
     VisualState visual() const;
     std::vector<SimEvent> eventsSince(std::uint64_t seq) const;
     std::vector<HistorySample> historySince(std::uint64_t index, std::uint64_t* nextIndex, std::size_t max = 100000) const;
-    std::uint64_t historyEnd() const;  // index one past the newest sample
+    std::uint64_t historyEnd() const;    // index one past the newest sample
+    std::uint64_t historyStart() const;  // index of the oldest sample still held (moves past all on a cold reset)
     std::vector<CrackEvent> cracksSince(std::uint64_t seq, std::size_t max = 4096) const;
     std::uint64_t crackSeq() const;
     RoasterDef roasterDef() const;  // copy of the loaded roaster definition

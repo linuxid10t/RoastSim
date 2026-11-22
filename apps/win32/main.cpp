@@ -826,15 +826,28 @@ void refresh() {
         g.histNext = 0;
         g.graphStart = g.graphEnd = -1;
     }
+    // g.hist holds samples histNext - size .. histNext - 1, without gaps.
     rs_sample buf[512];
     uint64_t next = g.histNext;
     for (;;) {
+        const uint64_t asked = next;
         int n = rs_host_get_history(g.host, next, buf, 512, &next);
         if (n <= 0) break;
+        // The simulator no longer had what we asked for (reset while we were
+        // behind): everything we hold is older still, so start over from here.
+        if (next - static_cast<uint64_t>(n) > asked) g.hist.clear();
         g.hist.insert(g.hist.end(), buf, buf + n);
     }
     g.histNext = next;
     if (g.hist.size() > 20000) g.hist.erase(g.hist.begin(), g.hist.begin() + 5000);
+    // A cold reset or roaster load (from any front end or MCP) moves the
+    // simulator's history start past every earlier sample: those belong to
+    // the discarded roast and must not reach the next graph. Paused, the reset
+    // and the next power-on share a timestamp, so time alone can't tell them apart.
+    const uint64_t held = g.histNext - g.hist.size();
+    if (g.st.history_start > held)
+        g.hist.erase(g.hist.begin(),
+                     g.hist.begin() + static_cast<std::ptrdiff_t>(std::min<uint64_t>(g.hist.size(), g.st.history_start - held)));
 
     if (g.st.event_seq > g.eventSeq) {
         Value c = Value::object();
