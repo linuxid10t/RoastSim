@@ -26,9 +26,11 @@ constexpr const char* kInstructions =
     "RoastSim is a coffee roasting simulator: a virtual roaster with realistic bean physics. "
     "Units: temperatures in degrees C, rate of rise (RoR) in C/min, weights in grams, controls in percent (0-100).\n"
     "A typical roast: list_presets, load_roaster (with a bean), set_power on, set_controls, preheat (drum "
-    "and pan roasters; air roasters such as poppers and fluid beds are usually charged cold), charge, "
-    "then watch with advance_time and get_state while adjusting heat and fan; after first crack (FCs) let the "
-    "roast develop (usually 15-25% of the total time), drop, and read get_report.\n"
+    "and pan roasters only), charge, then watch with advance_time and get_state while adjusting heat and fan; "
+    "after first crack (FCs) let the roast develop (usually 15-25% of the total time), drop, and read get_report.\n"
+    "Do not preheat air roasters (kind fluid_bed: poppers, fluid beds, spouted beds). Like the real machines, "
+    "they are charged cold: switch on, set heat and fan, and charge straight away. Drum and pan roasters "
+    "(kind drum, stir_pan) store heat in their metal and should be preheated before charging.\n"
     "The simulation keeps running in real time between tool calls. For careful control, pause it "
     "(set_speed paused=true) and move the clock yourself with advance_time, which fast-forwards instantly. "
     "When Artisan is logging the roast, time is locked to real time and advance_time waits instead.\n"
@@ -108,6 +110,9 @@ std::vector<SimEvent> currentRoastEvents(Host& host) {
     }
     return std::vector<SimEvent>(all.begin() + static_cast<std::ptrdiff_t>(from), all.end());
 }
+
+// Poppers, fluid beds and spouted beds: charged cold, not preheated.
+bool isAirRoaster(const json::Value& state) { return state["roaster"].get("kind", "") == "fluid_bed"; }
 
 json::Value etaView(const json::Value& v) {
     double s = v.num(-1);
@@ -279,7 +284,10 @@ Outcome loadRoaster(Host& host, const json::Value& a) {
     v["roaster"].erase("probes");
     v["bean"] = st["bean"];
     v["power"] = st["power"];
-    v["note"] = "The machine starts cold and empty.";
+    v["note"] = isAirRoaster(st)
+                    ? "The machine starts cold and empty. It is an air roaster: do not preheat it. Switch it on, "
+                      "set heat and fan, and charge cold."
+                    : "The machine starts cold and empty. Switch it on and preheat it before charging.";
     return okData(v);
 }
 
@@ -342,6 +350,9 @@ Outcome preheat(Host& host, const json::Value& a) {
                     ? "Fast-forwarded until ET held the target. The heat control is left where the preheat controller ended."
                     : "ET did not reach the target: the heater is flat out and the air stopped warming (or the time "
                       "limit ran out). Choose a lower target; on an air roaster, less fan also gives hotter air.";
+    if (isAirRoaster(host.stateJson(false)))
+        v["advice"] = "This is an air roaster: they are charged cold, so next time skip preheat and charge straight "
+                      "after switching on (unless you are copying a profile that starts hot).";
     v["state"] = summaryState(host);
     return okData(v);
 }
@@ -652,9 +663,9 @@ std::vector<Tool>& tools() {
              R"J({"type":"object","properties":{"on":{"type":"boolean"}},"required":["on"]})J", false, false, setPower},
             {"preheat", "Preheat",
              "Fast-forward the empty, powered-on machine with a temperature controller until ET holds the target. "
-             "Drum and pan roasters need it: their metal stores heat, and the preheat waits until it has settled. "
-             "Air roasters (poppers, fluid beds) are usually charged cold; for them this is only a short warm-up "
-             "of the air, for profiles that start hot.",
+             "For drum and pan roasters (kind drum, stir_pan): their metal stores heat, and the preheat waits until "
+             "it has settled. Do not use it on air roasters (kind fluid_bed: poppers, fluid beds); charge those "
+             "cold. On them it only warms the air briefly, which a profile copied from a hot-start roast might want.",
              R"J({"type":"object","properties":{"target_C":{"type":"number","minimum":40,"maximum":450,
                  "description":"target environment temperature in C"}},"required":["target_C"]})J",
              false, false, preheat},

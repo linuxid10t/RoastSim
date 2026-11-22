@@ -1,6 +1,6 @@
 # Controlling RoastSim with AI (MCP)
 
-RoastSim has a built-in [Model Context Protocol](https://modelcontextprotocol.io) server. An AI assistant such as Claude can read the roaster and drive a whole roast with it: pick a roaster and bean, preheat, charge, adjust heat and fan, watch for first crack, drop, and review the report.
+RoastSim has a built-in [Model Context Protocol](https://modelcontextprotocol.io) server. An AI assistant such as Claude can read the roaster and drive a whole roast with it: pick a roaster and bean, preheat a drum, charge, adjust heat and fan, watch for first crack, drop, and review the report.
 
 The assistant drives the same machine as everything else. If the Win32 app or web UI is open, you watch the roast there while the AI runs it, and Artisan can log it as usual. Every change the AI makes goes through the [command API](API.md) with origin `mcp`, so the event log shows which events the AI marked.
 
@@ -155,7 +155,7 @@ Any MCP client works. Use the HTTP address for clients that support it, or run `
 | `select_bean` | Choose the coffee for the next charge |
 | `set_controls` | `heat`, `fan`, `drum`, `stir`, `voltage`, `cooling` in percent |
 | `set_power` | Master power switch |
-| `preheat` | Fast-forward the empty machine until ET holds a target (for drums and pans; on air roasters, which are usually charged cold, only a short warm-up) |
+| `preheat` | Fast-forward the empty machine until ET holds a target. For drums and pans only: the server tells the assistant not to preheat air roasters (poppers, fluid beds), which are charged cold |
 | `charge` / `drop` / `end_cooling` | Beans in, beans out, end cooling |
 | `mark_event` | Mark DRY, FCs, FCe, SCs or SCe by hand, or add a note |
 | `advance_time` | Let time pass: some seconds, or until an event (`until: "FCs"`) or a BT temperature (`until_bt_C`). Returns the new events and the state. |

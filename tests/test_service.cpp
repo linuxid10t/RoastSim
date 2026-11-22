@@ -764,12 +764,18 @@ TEST(mcp_server) {
     json::Value presets = mcpOk(mcp, "list_presets");
     CHECK(presets["roasters"].size() >= 8 && presets["beans"].size() >= 5);
     CHECK(presets.get("loaded_roaster", "") == "drum_home_1kg");
-    CHECK(mcpOk(mcp, "load_roaster", R"({"roaster":"drum_home_1kg","bean":"colombia_washed"})").getBool("loaded", false));
+    // Air roasters are charged cold; drums are preheated.
+    json::Value air = mcpOk(mcp, "load_roaster", R"({"roaster":"popper_modded"})");
+    CHECK(air.get("note", "").find("do not preheat") != std::string::npos);
+    mcpOk(mcp, "set_power", R"({"on":true})");
+    CHECK(mcpOk(mcp, "preheat", R"({"target_C":150})").has("advice"));
+    json::Value drum = mcpOk(mcp, "load_roaster", R"({"roaster":"drum_home_1kg","bean":"colombia_washed"})");
+    CHECK(drum.getBool("loaded", false) && drum.get("note", "").find("preheat it before charging") != std::string::npos);
     CHECK(mcpOk(mcp, "set_speed", R"({"paused":true})").getBool("paused", false));
     CHECK(mcpOk(mcp, "set_power", R"({"on":true})").getBool("power", false));
     CHECK(mcpOk(mcp, "set_controls", R"({"heat":85,"fan":30,"drum":60})")["controls_pct"].get("heat", 0.0) == 85);
     json::Value pre = mcpOk(mcp, "preheat", R"({"target_C":200})");
-    CHECK(pre.get("simulated_s", 0.0) > 0);
+    CHECK(pre.get("simulated_s", 0.0) > 0 && !pre.has("advice"));
     mcpOk(mcp, "set_controls", R"({"heat":85})");
     json::Value charged = mcpOk(mcp, "charge", R"({"batch_g":500})");
     CHECK(charged.get("phase", "") == "roasting" && charged["beans"].get("mass_g", 0.0) > 400);
