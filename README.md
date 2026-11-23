@@ -207,3 +207,7 @@ scripts/   scripted calibration roasts
 tests/     test-suite
 docs/      ARCHITECTURE (incl. the 3D plan), ARTISAN_SETUP, API, PHYSICS, SOUND, images
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
