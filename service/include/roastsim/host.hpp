@@ -53,6 +53,9 @@ struct HostConfig {
     std::string web_dir;         // empty: auto-detect "web"
     std::string presets_dir;     // empty: the user's RoastSim data directory
     std::string bind_address = "127.0.0.1";  // "0.0.0.0" to serve the LAN
+    // Extra browser origins (e.g. "http://example.com:8080") whose pages may use
+    // POST /mcp, besides this server's own pages and pages on localhost.
+    std::vector<std::string> mcp_allowed_origins;
     bool http_enabled = true;
     int http_port = 8080;        // web UI + JSON API + WebSocket (Artisan and UI)
     bool modbus_enabled = true;

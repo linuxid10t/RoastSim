@@ -20,6 +20,13 @@ HostConfig HostConfig::fromJson(const json::Value& v, const HostConfig& base) {
     c.web_dir = v.get("web_dir", c.web_dir.c_str());
     c.presets_dir = v.get("presets_dir", c.presets_dir.c_str());
     c.bind_address = v.get("bind_address", c.bind_address.c_str());
+    const json::Value& origins = v["mcp_allowed_origins"];
+    if (origins.isArray() || origins.isString()) {
+        c.mcp_allowed_origins.clear();
+        if (origins.isString()) c.mcp_allowed_origins.push_back(origins.str());
+        for (const auto& o : origins.items())
+            if (o.isString()) c.mcp_allowed_origins.push_back(o.str());
+    }
     c.http_enabled = v.getBool("http_enabled", c.http_enabled);
     c.http_port = static_cast<int>(v.get("http_port", static_cast<double>(c.http_port)));
     c.modbus_enabled = v.getBool("modbus_enabled", c.modbus_enabled);
@@ -75,6 +82,9 @@ json::Value HostConfig::toJson() const {
     v["web_dir"] = web_dir;
     v["presets_dir"] = presets_dir;
     v["bind_address"] = bind_address;
+    json::Value origins = json::Value::array();
+    for (const auto& o : mcp_allowed_origins) origins.push(o);
+    v["mcp_allowed_origins"] = origins;
     v["http_enabled"] = http_enabled;
     v["http_port"] = http_port;
     v["modbus_enabled"] = modbus_enabled;

@@ -183,6 +183,14 @@ When Artisan is logging, the clock is locked to real time, so `advance_time` wai
 
 The MCP endpoint has the same access as the web UI and `/api/command`: anyone who can reach the HTTP port can drive the simulator. By default RoastSim listens only on `127.0.0.1`. The MCP endpoint rejects requests that come from web pages on other sites (it checks the `Origin` header), so a page you browse to can't drive your roaster. There is no authentication, so think twice before setting `bind_address` to `0.0.0.0`.
 
+Pages served by RoastSim itself and pages on `localhost`, `127.0.0.1` or `[::1]` (such as a local MCP Inspector) are allowed. Native clients send no `Origin` and are always allowed. To use a browser-based MCP client hosted on another site, list its origin in `roastsim.json` (see [API.md](API.md#host-configuration-roastsimjson----config)) and restart RoastSim:
+
+```json
+"mcp_allowed_origins": ["http://example.com:8080"]
+```
+
+An origin is the scheme, host and port of the page, as the browser's address bar shows it, without a path. It must match exactly (case and a trailing `/` don't matter), so `http://example.com:8080` doesn't allow `https://example.com` or `http://example.com`. Every script on a listed site can drive your simulator while RoastSim is running, so only list sites you control.
+
 ## Protocol details
 
 * MCP protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. The server answers with the client's version when it knows it.

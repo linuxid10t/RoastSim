@@ -77,14 +77,20 @@ bool trustedPresetOrigin(const std::map<std::string, std::string>& headers, cons
 
 // MCP over HTTP must reject browser pages from other sites (DNS rebinding):
 // a request without Origin is a native client; with one, it must be this
-// server's own origin or a page on the local machine (e.g. the MCP Inspector).
-bool trustedMcpOrigin(const std::map<std::string, std::string>& headers) {
+// server's own origin, a page on the local machine (e.g. the MCP Inspector),
+// or an origin listed in mcp_allowed_origins.
+bool trustedMcpOrigin(const std::map<std::string, std::string>& headers, const std::vector<std::string>& allowed) {
     const auto origin = headers.find("origin");
     if (origin == headers.end() || origin->second == "null") return origin == headers.end();
     std::string from = lower(origin->second);
     const auto host = headers.find("host");
     if (host != headers.end() && (from == "http://" + lower(host->second) || from == "https://" + lower(host->second)))
         return true;
+    for (std::string a : allowed) {
+        a = lower(a);
+        while (!a.empty() && (a.back() == '/' || a.back() == ' ')) a.pop_back();
+        if (!a.empty() && a == from) return true;
+    }
     std::size_t scheme = from.find("://");
     if (scheme == std::string::npos) return false;
     std::string authority = from.substr(scheme + 3);
@@ -429,7 +435,7 @@ void NetServer::Impl::handleHttp(Conn& c) {
 
 void NetServer::Impl::handleMcp(Conn& c, const std::string& method,
                                 const std::map<std::string, std::string>& headers, const std::string& body) {
-    if (!trustedMcpOrigin(headers)) {
+    if (!trustedMcpOrigin(headers, host.config().mcp_allowed_origins)) {
         c.out += httpResponse(403, "Forbidden", "text/plain", "MCP requests from this origin are not allowed");
         return;
     }

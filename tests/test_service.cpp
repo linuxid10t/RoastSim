@@ -33,6 +33,7 @@ std::unique_ptr<Host> startHost(const char* roaster = "popper_modded") {
     cfg.http_port = basePort() + 1;
     cfg.roaster = roaster;
     cfg.seed = 7;
+    cfg.mcp_allowed_origins = {"HTTP://Trusted.Example:8080/"};
     auto h = std::make_unique<Host>(cfg);
     std::string err;
     if (!h->start(&err)) std::printf("    host start failed: %s\n", err.c_str());
@@ -1035,6 +1036,21 @@ TEST(mcp_server) {
     CHECK(r.find("200 OK") != std::string::npos && r.find("\"phase\"") != std::string::npos);
     r = mcpPost(R"({"jsonrpc":"2.0","id":9,"method":"ping"})", "Origin: http://evil.example\r\n");
     CHECK(r.find("403 Forbidden") != std::string::npos);
+    // mcp_allowed_origins: exact origin (scheme, host and port), case and trailing slash ignored
+    r = mcpPost(R"({"jsonrpc":"2.0","id":9,"method":"ping"})", "Origin: http://trusted.example:8080\r\n");
+    CHECK(r.find("200 OK") != std::string::npos);
+    r = mcpPost(R"({"jsonrpc":"2.0","id":9,"method":"ping"})", "Origin: http://trusted.example\r\n");
+    CHECK(r.find("403 Forbidden") != std::string::npos);
+    r = mcpPost(R"({"jsonrpc":"2.0","id":9,"method":"ping"})", "Origin: https://trusted.example:8080\r\n");
+    CHECK(r.find("403 Forbidden") != std::string::npos);
+    r = mcpPost(R"({"jsonrpc":"2.0","id":9,"method":"ping"})", "Origin: http://trusted.example:8080.evil.example\r\n");
+    CHECK(r.find("403 Forbidden") != std::string::npos);
+    HostConfig parsed = HostConfig::fromJson(
+        json::Value::parse(R"({"mcp_allowed_origins":["http://a.example:8080", 5, "http://b.example"]})"), HostConfig{});
+    CHECK(parsed.mcp_allowed_origins.size() == 2 && parsed.mcp_allowed_origins[1] == "http://b.example");
+    CHECK(HostConfig::fromJson(json::Value::parse(R"({"mcp_allowed_origins":"http://a.example"})"), HostConfig{})
+              .mcp_allowed_origins.size() == 1);
+    CHECK(HostConfig::fromJson(parsed.toJson(), HostConfig{}).mcp_allowed_origins == parsed.mcp_allowed_origins);
     CHECK(mcpPost(R"({"jsonrpc":"2.0","method":"notifications/initialized"})").find("202 Accepted") != std::string::npos);
     CHECK(mcpPost("{nope").find("400 Bad Request") != std::string::npos);
     r = httpExchange(basePort() + 1, "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n");

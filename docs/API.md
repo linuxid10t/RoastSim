@@ -93,6 +93,7 @@ Fluid-bed definitions can set `fluid_bed.air_pattern` to `upflow` (the default),
 {
   "bind_address": "127.0.0.1",
   "http_port": 8080, "http_enabled": true,
+  "mcp_allowed_origins": [],
   "modbus_port": 502, "modbus_enabled": true,
   "tc4_port": "", "tc4_baud": 115200,
   "roaster": "popper_modded", "bean": "colombia_washed", "batch_g": 0,
@@ -119,6 +120,8 @@ Every front end uses the same settings file, found by `platform::defaultConfigPa
 `rs_host_create()` reads that file and lays the caller's `config_json` keys over it, so a native shell can pass `NULL` and get saved settings for free. `"config_path"` in `config_json` names another file, and `""` turns saving off. `roastsimd` takes `--config FILE`, and its command-line flags override the file. A `--roaster` flag also drops the saved `batch_g` and `env.line_voltage`, which belong to the saved roaster. The `server` command reports the file in use as `config_path`. If the file doesn't parse, it reports `config_error`, starts with the defaults, and leaves the file alone.
 
 Settings changed while running are saved back to the file, whoever changes them (a front end, Artisan or an MCP assistant): `units`, `weight_units` and `altitude_units`; `roaster`, `bean` and `batch_g` (from `load`, `bean`, `batch` and `charge`); `env`; `time_scale`; and each front end's `ui` block. Only those keys are rewritten, so anything else you put in the file stays. A file that doesn't parse is never overwritten. `batch_g` of 0, or outside the roaster's batch limits, means the roaster's default batch. Pausing, power, controls and probe faults are not saved.
+
+`mcp_allowed_origins` lists extra browser origins (such as `"http://example.com:8080"`) whose pages may use `POST /mcp`. It's read at startup and never rewritten. See [MCP.md](MCP.md#security).
 
 Set `presets_dir` in the config or use `roastsimd --presets DIR` to choose where custom preset JSON files are saved. The default on Windows is `%LOCALAPPDATA%/RoastSim/presets`. On Linux it is `$XDG_DATA_HOME/RoastSim/presets` or `~/.local/share/RoastSim/presets`.
 
