@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -52,7 +53,7 @@ enum : int {
     IDC_ROASTER = 101, IDC_BEAN, IDC_BATCH, IDC_BATCHUNIT, IDC_CHARGE, IDC_DROP, IDC_MARKFC, IDC_POWER, IDC_COOL,
     IDC_READOUT, IDC_STATUSBAR, IDC_DESC, IDC_PHASES,
     IDC_SLIDER0 = 200, IDC_SLABEL0 = 220, IDC_SVALUE0 = 240,
-    IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY, IDM_REPORT,
+    IDM_EXIT = 1001, IDM_WEB, IDM_FOLDER, IDM_COOLEND, IDM_EMPTY, IDM_REPORT, IDM_SETTINGS_FOLDER,
     IDM_MARK_DRY = 1020, IDM_MARK_FCS, IDM_MARK_FCE, IDM_MARK_SCS, IDM_MARK_SCE,
     IDM_FAULT_BT_OPEN = 1040, IDM_FAULT_BT_SPIKES, IDM_FAULT_BT_DRIFT, IDM_FAULT_BT_NOISY, IDM_FAULT_ET_OPEN,
     IDM_FAULT_CLEAR, IDM_ABOUT = 1060,
@@ -171,6 +172,7 @@ struct App {
 
     bool soundOn = true;
     int volume = 75;  // percent
+    std::string configPath;  // the settings file the host reads and saves ("" = none)
 
     std::vector<std::string> roasterIds, beanIds;
     Value roasterDef;
@@ -211,7 +213,7 @@ int S(int v) { return static_cast<int>(std::lround(v * g.dpi)); }
 
 // ---------------------------------------------------------------- units
 // The simulator always reports C, grams and metres; the shared unit setting
-// (Units menu, saved to roastsim.json) only changes how values are shown/typed.
+// (Units menu, saved in the settings file) only changes how values are shown/typed.
 bool isF() { return g.st.temp_unit == 'F'; }
 double T(double c) { return isF() ? c * 1.8 + 32.0 : c; }
 double fromT(double v) { return isF() ? (v - 32.0) / 1.8 : v; }
@@ -260,6 +262,58 @@ Value cmd1(const char* c) {
     Value v = Value::object();
     v["cmd"] = c;
     return command(v);
+}
+
+// This shell's own settings (sound, volume, window placement), kept by the
+// host under "ui"."win32" in the settings file (g.configPath).
+void saveUiSettings(const Value& settings) {
+    Value c = Value::object();
+    c["cmd"] = "ui_settings";
+    c["shell"] = "win32";
+    c["settings"] = settings;
+    command(c);
+}
+
+void saveSoundSettings() {
+    Value s = Value::object();
+    s["sound"] = g.soundOn;
+    s["volume"] = g.volume;
+    saveUiSettings(s);
+}
+
+void saveWindowPlacement(HWND w) {
+    WINDOWPLACEMENT wp{};
+    wp.length = sizeof wp;
+    if (!GetWindowPlacement(w, &wp)) return;
+    const RECT& r = wp.rcNormalPosition;
+    Value win = Value::object();
+    win["x"] = static_cast<double>(r.left);
+    win["y"] = static_cast<double>(r.top);
+    win["width"] = static_cast<double>(r.right - r.left);
+    win["height"] = static_cast<double>(r.bottom - r.top);
+    win["maximized"] = wp.showCmd == SW_SHOWMAXIMIZED || (wp.flags & WPF_RESTORETOMAXIMIZED) != 0;
+    Value s = Value::object();
+    s["window"] = win;
+    saveUiSettings(s);
+}
+
+// Puts the window where it was last closed, if that spot is still on a screen.
+bool restoreWindowPlacement(HWND w, const Value& win) {
+    if (!win.isObject()) return false;
+    RECT r;
+    r.left = static_cast<LONG>(win.get("x", 0.0));
+    r.top = static_cast<LONG>(win.get("y", 0.0));
+    r.right = r.left + static_cast<LONG>(win.get("width", 0.0));
+    r.bottom = r.top + static_cast<LONG>(win.get("height", 0.0));
+    if (r.right - r.left < 200 || r.bottom - r.top < 150) return false;
+    if (!MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) return false;
+    WINDOWPLACEMENT wp{};
+    wp.length = sizeof wp;
+    GetWindowPlacement(w, &wp);
+    wp.rcNormalPosition = r;
+    wp.flags = 0;
+    wp.showCmd = win.getBool("maximized", false) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+    return SetWindowPlacement(w, &wp) != 0;
 }
 
 void showError(const Value& r) {
@@ -1305,7 +1359,8 @@ void setUnits(const char* key, const char* value) {
     Value r = command(c);
     showError(r);
     if (r.getBool("ok", false) && !r.getBool("saved", false))
-        MessageBoxW(g.wnd, L"Units changed, but roastsim.json next to the program could not be written, so they won't be remembered.",
+        MessageBoxW(g.wnd, (L"Units changed, but the settings file could not be written, so they won't be remembered:\n" +
+                            widen(g.configPath)).c_str(),
                     L"Units", MB_ICONINFORMATION);
     refresh();
 }
@@ -1841,6 +1896,7 @@ void onCommand(int id, int code) {
     if (id >= IDM_VOL0 && id < IDM_VOL0 + kVolumeCount) {
         g.volume = kVolumes[id - IDM_VOL0];
         applySound();
+        saveSoundSettings();
         return;
     }
     switch (id) {
@@ -1908,6 +1964,7 @@ void onCommand(int id, int code) {
         case IDM_SOUND:
             g.soundOn = !g.soundOn;
             applySound();
+            saveSoundSettings();
             break;
         case IDM_TEMP_C: setUnits("temperature", "C"); break;
         case IDM_TEMP_F: setUnits("temperature", "F"); break;
@@ -1935,17 +1992,28 @@ void onCommand(int id, int code) {
         case IDM_FOLDER:
             ShellExecuteW(nullptr, L"open", widen(roastsim::platform::executableDir()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             break;
+        case IDM_SETTINGS_FOLDER: {
+            // The folder may not exist until the first setting is saved.
+            std::error_code ec;
+            const auto folder = std::filesystem::u8path(g.configPath).parent_path();
+            std::filesystem::create_directories(folder, ec);
+            ShellExecuteW(nullptr, L"open", folder.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            break;
+        }
         case IDM_ABOUT:
             MessageBoxW(g.wnd,
-                        L"RoastSim 2026 - virtual coffee roaster\n\n"
-                        L"Artisan can connect while this window is open:\n"
-                        L"  Modbus TCP: 127.0.0.1:502\n"
-                        L"  WebSocket:  ws://127.0.0.1:8080/WebSocket\n"
-                        L"See docs/ARTISAN_SETUP.md for register maps and settings.\n\n"
-                        L"AI assistants can drive it over MCP: http://127.0.0.1:8080/mcp\n"
-                        L"(see docs/MCP.md).\n\n"
-                        L"The Units menu also sets what Artisan receives (match Artisan's C/F mode).\n"
-                        L"Edit roastsim.json next to the .exe to change ports or bind to the LAN.",
+                        (L"RoastSim 2026 - virtual coffee roaster\n\n"
+                         L"Artisan can connect while this window is open:\n"
+                         L"  Modbus TCP: 127.0.0.1:502\n"
+                         L"  WebSocket:  ws://127.0.0.1:8080/WebSocket\n"
+                         L"See docs/ARTISAN_SETUP.md for register maps and settings.\n\n"
+                         L"AI assistants can drive it over MCP: http://127.0.0.1:8080/mcp\n"
+                         L"(see docs/MCP.md).\n\n"
+                         L"The Units menu also sets what Artisan receives (match Artisan's C/F mode).\n"
+                         L"Settings are saved in the file below. Edit it while RoastSim is closed\n"
+                         L"to change ports or bind to the LAN (File > Open settings folder):\n  " +
+                         widen(g.configPath))
+                            .c_str(),
                         L"About RoastSim", MB_ICONINFORMATION);
             break;
         case IDM_EXIT: DestroyWindow(g.wnd); break;
@@ -2020,6 +2088,7 @@ void createWidgets() {
     HMENU file = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, IDM_WEB, L"Open &web control panel");
     AppendMenuW(file, MF_STRING, IDM_FOLDER, L"Open program &folder");
+    AppendMenuW(file, MF_STRING | (g.configPath.empty() ? MF_GRAYED : 0), IDM_SETTINGS_FOLDER, L"Open &settings folder");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
 
@@ -2164,6 +2233,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
         }
         case WM_DESTROY:
+            saveWindowPlacement(h);
             KillTimer(h, TIMER_UI);
             PostQuitMessage(0);
             return 0;
@@ -2198,24 +2268,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g.big = CreateFontIndirectW(&bg);
     g.mono = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
 
-    // roastsim.json next to the exe configures ports, bind address, units...;
-    // unit changes made in the app are saved back to it.
-    std::string cfgText, err1;
-    std::string cfgPath = roastsim::platform::executableDir() + "/roastsim.json";
-    roastsim::readTextFile(cfgPath, cfgText);
-    Value cfg = cfgText.empty() ? Value::object() : Value::parse(cfgText, &err1);
-    if (!err1.empty() || !cfg.isObject()) {
-        MessageBoxA(nullptr, ("roastsim.json: " + err1).c_str(), "RoastSim", MB_ICONWARNING);
-        cfg = Value::object();
-    }
-    cfg["config_path"] = cfgPath;
-    std::string cfgJson = cfg.dump();
+    // The host reads the user's roastsim.json (ports, bind address, units, the
+    // roaster and environment last used...) and saves changes back to it.
     char err[1024] = {0};
-    g.host = rs_host_create(cfgJson.c_str(), err, sizeof err);
+    g.host = rs_host_create(nullptr, err, sizeof err);
     if (!g.host || !rs_host_start(g.host, err, sizeof err)) {
         MessageBoxA(nullptr, err, "RoastSim failed to start", MB_ICONERROR);
         return 1;
     }
+    const Value server = cmd1("server");
+    g.configPath = server.get("config_path", "");
+    if (server.has("config_error"))
+        MessageBoxW(nullptr, widen(server.get("config_error", "")).c_str(), L"RoastSim settings", MB_ICONWARNING);
+    Value uiReq = Value::object();
+    uiReq["cmd"] = "ui_settings";
+    uiReq["shell"] = "win32";
+    const Value ui = command(uiReq)["settings"];  // sound, volume and window placement saved last time
+    g.soundOn = ui.getBool("sound", g.soundOn);
+    for (int v : kVolumes)
+        if (static_cast<int>(ui.get("volume", 0.0)) == v) g.volume = v;
     g.audio = rs_audio_create(g.host, 44100);
 
     WNDCLASSEXW rc{};
@@ -2241,7 +2312,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     HWND w = CreateWindowExW(0, wc.lpszClassName, L"RoastSim 2026 - virtual coffee roaster",
                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S(1300), S(860),
                              nullptr, nullptr, inst, nullptr);
-    ShowWindow(w, show);
+    if (show == SW_SHOWMINIMIZED || show == SW_MINIMIZE || show == SW_SHOWMINNOACTIVE ||
+        !restoreWindowPlacement(w, ui["window"]))
+        ShowWindow(w, show);
     UpdateWindow(w);
 
     MSG m;

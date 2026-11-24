@@ -138,6 +138,8 @@ For Claude Desktop and other clients that launch servers themselves, use `roasts
 <summary><b>Environment</b></summary>
 
 Set the ambient temperature, line voltage and sag, altitude, humidity and gas pressure. Loading a roaster sets its rated wall voltage. To simulate a different supply, use the Environment dialog.
+
+RoastSim remembers your roaster, bean, batch size, environment, speed, units, sound, volume and window position, and starts with them next time. The machine always starts switched off and empty. Settings are kept in `roastsim.json` in your settings folder: `%LOCALAPPDATA%\RoastSim` on Windows (**File → Open settings folder**), `~/.config/RoastSim` on Linux. If a `roastsim.json` sits next to the program, RoastSim uses that one instead, which makes a portable install.
 </details>
 
 <details>

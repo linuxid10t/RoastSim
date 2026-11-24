@@ -2,7 +2,7 @@
 
 A GTK 4 front end over the C API (`service/include/roastsim/roastsim.h`). It should mirror `apps/win32/main.cpp`:
 
-* `rs_host_create()` / `rs_host_start()` at startup. The servers (Modbus, WebSocket, web UI, TC4 on a pty) come for free.
+* `rs_host_create(NULL, …)` / `rs_host_start()` at startup. The servers (Modbus, WebSocket, web UI, TC4 on a pty) come for free, and so do saved settings (`~/.config/RoastSim/roastsim.json`, see docs/API.md). Keep the shell's own settings (window size, sound) with `{"cmd":"ui_settings","shell":"gtk",…}`.
 * A `GtkDropDown` for roaster and bean, filled from `rs_host_command("{\"cmd\":\"list\"}")`.
 * A `GtkScale` per control in the roaster definition (`{"cmd":"state","full":true}` → `roaster_def.controls`), wired to `rs_host_set_control()`.
 * A `GtkDrawingArea` graph fed incrementally by `rs_host_get_history()`, plus a bean preview from `rs_host_get_visual()`.

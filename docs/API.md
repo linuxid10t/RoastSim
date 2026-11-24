@@ -39,13 +39,14 @@ Replies are objects with `"ok": true|false` (and `"error"`) unless noted.
 | `time_scale` | `value` (0–120] | speed when no logger is connected |
 | `pause` | `value` (bool; toggles if absent) | |
 | `step` | `seconds` | advance the simulation immediately (testing, teaching) |
-| `units` | `value`: C or F | units reported to Artisan (Modbus/WS/TC4) |
+| `units` | `temperature` (C or F; `value` also accepted), `weight`, `altitude` | units shown by the UIs and reported to Artisan (Modbus/WS/TC4) |
 | `parcels` | `value` | bean parcels for the next charge (default 200) |
+| `ui_settings` | `shell` (e.g. `win32`, `web`), `settings` (object, optional) | a front end's own settings (sound, volume, window placement), merged key by key into `ui.<shell>` in `roastsim.json`; reply `settings` (all saved for that shell) and, when `settings` was sent, `saved` |
 | `history` | `since` (index), `max` | `samples` as `[t, t_roast, bt, et, ror_bt, ror_et, bean_true, heat, fan, drum]`, `next` |
 | `events` | `since` (seq) | `events`: `{seq, type, detail, origin, t, t_roast, bt, power}` |
 | `report` | | roast report: times, DTR, Agtron whole/ground/spread, weight & moisture loss, defects, notes |
 | `visual` | `max` | render state for 3D/2D views; `beans` as `[r, g, b, size_mm, oil, temp, count, exposure, cracked, scorch]` |
-| `server` | | listener status, connected clients, logger status, config |
+| `server` | | listener status, connected clients, logger status, config, `config_path` (the settings file, `""` if none) and `config_error` (only when the file couldn't be read) |
 | `subscribe` | `history_from`, `event_seq`, `value` | **WebSocket only**: stream `{"type":"state", … , "history":[…], "history_from": N}` at 4 Hz plus `{"type":"event", …}` messages. `history_from` is the index of the first row sent. Drop any rows you keep with an index below the state's `history_start`: a cold reset or roaster load moves it past every earlier sample |
 | `audio` | `value` (bool), `rate` (8000–48000, default 24000) | **WebSocket only**: stream the roaster's sound as binary frames of int16 little-endian mono PCM (see [SOUND.md](SOUND.md)) |
 | `audio_mix` | `master`, `machine`, `cracks` (0–1) | **WebSocket only**: levels for this connection's sound stream |
@@ -94,14 +95,30 @@ Fluid-bed definitions can set `fluid_bed.air_pattern` to `upflow` (the default),
   "http_port": 8080, "http_enabled": true,
   "modbus_port": 502, "modbus_enabled": true,
   "tc4_port": "", "tc4_baud": 115200,
-  "roaster": "popper_modded", "bean": "colombia_washed",
+  "roaster": "popper_modded", "bean": "colombia_washed", "batch_g": 0,
+  "env": { "ambient_C": 22, "humidity_rh": 45, "line_voltage": 120, "altitude_m": 0 },
   "units": "C", "time_scale": 1, "lock_realtime_with_logger": true,
   "seed": 0, "parcels": 200,
-  "artisan_ws": { "push_charge_drop": true, "push_crack_events": true }
+  "artisan_ws": { "push_charge_drop": true, "push_crack_events": true },
+  "ui": { "win32": { "sound": true, "volume": 75 }, "web": { "volume": 75 } }
 }
 ```
 
-The Win32 shell reads `roastsim.json` next to its `.exe`. `roastsimd` takes `--config FILE`, and its command-line flags override the file.
+Every front end uses the same settings file, found by `platform::defaultConfigPath()`:
+
+1. `roastsim.json` next to the program, if there is one. This is a portable install, such as a build folder or a USB stick.
+2. Otherwise `roastsim.json` in the per-user settings folder, created on the first save:
+
+| OS | Settings folder |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\RoastSim` |
+| Linux and other POSIX | `$XDG_CONFIG_HOME/RoastSim`, or `~/.config/RoastSim` |
+| Haiku | `~/config/settings/RoastSim` |
+| macOS | `~/Library/Application Support/RoastSim` |
+
+`rs_host_create()` reads that file and lays the caller's `config_json` keys over it, so a native shell can pass `NULL` and get saved settings for free. `"config_path"` in `config_json` names another file, and `""` turns saving off. `roastsimd` takes `--config FILE`, and its command-line flags override the file. A `--roaster` flag also drops the saved `batch_g` and `env.line_voltage`, which belong to the saved roaster. The `server` command reports the file in use as `config_path`. If the file doesn't parse, it reports `config_error`, starts with the defaults, and leaves the file alone.
+
+Settings changed while running are saved back to the file, whoever changes them (a front end, Artisan or an MCP assistant): `units`, `weight_units` and `altitude_units`; `roaster`, `bean` and `batch_g` (from `load`, `bean`, `batch` and `charge`); `env`; `time_scale`; and each front end's `ui` block. Only those keys are rewritten, so anything else you put in the file stays. A file that doesn't parse is never overwritten. `batch_g` of 0, or outside the roaster's batch limits, means the roaster's default batch. Pausing, power, controls and probe faults are not saved.
 
 Set `presets_dir` in the config or use `roastsimd --presets DIR` to choose where custom preset JSON files are saved. The default on Windows is `%LOCALAPPDATA%/RoastSim/presets`. On Linux it is `$XDG_DATA_HOME/RoastSim/presets` or `~/.local/share/RoastSim/presets`.
 

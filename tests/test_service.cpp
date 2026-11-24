@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 #include "../service/src/internal.hpp"
@@ -507,6 +508,177 @@ TEST(roaster_load_resets_wall_voltage) {
     CHECK(host.snapshot().env.humidity_rh == 63);
 }
 
+TEST(settings_survive_a_restart) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / ("roastsim-settings-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    const bool ready = !ec && fs::create_directory(dir, ec);
+    CHECK(ready);
+    if (!ready) return;
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code error; fs::remove_all(path, error); }
+    } cleanup{dir};
+    const std::string configPath = (dir / "roastsim.json").u8string();
+    {
+        std::ofstream f(dir / "roastsim.json");
+        f << R"({"parcels": 150, "my_note": "kept"})";
+    }
+    auto makeHost = [&]() {
+        std::string text;
+        CHECK(readTextFile(configPath, text));
+        HostConfig base;
+        base.data_dir = rstest::dataDir();
+        base.http_enabled = base.modbus_enabled = false;
+        base.config_path = configPath;
+        auto h = std::make_unique<Host>(HostConfig::fromJson(json::Value::parse(text), base));
+        CHECK(h->start(nullptr));
+        return h;
+    };
+    auto send = [](Host& h, const char* text) {
+        json::Value r = h.command(json::Value::parse(text), "test");
+        CHECK(r.getBool("ok", false));
+        return r;
+    };
+    {
+        auto h = makeHost();
+        send(*h, R"({"cmd":"load","roaster":"drum_home_1kg","bean":"kenya_washed"})");
+        send(*h, R"({"cmd":"bean","id":"ethiopia_natural"})");
+        send(*h, R"({"cmd":"batch","batch_g":750})");
+        send(*h, R"({"cmd":"env","ambient_C":31,"humidity_rh":70,"line_voltage":110,"altitude_m":1500})");
+        send(*h, R"({"cmd":"time_scale","value":10})");
+        send(*h, R"({"cmd":"pause","value":true})");
+        json::Value ui = send(*h, R"({"cmd":"ui_settings","shell":"win32","settings":{"sound":false,"volume":50}})");
+        CHECK(ui.getBool("saved", false));
+        send(*h, R"({"cmd":"ui_settings","shell":"win32","settings":{"window":{"x":10,"y":20}}})");
+        send(*h, R"({"cmd":"ui_settings","shell":"web","settings":{"volume":25}})");
+        h->stop();
+    }
+    auto h = makeHost();
+    const json::Value s = h->stateJson(false);
+    CHECK(s["roaster"].get("id", "") == "drum_home_1kg");
+    CHECK(s["bean"].get("id", "") == "ethiopia_natural");
+    CHECK(s.get("next_batch_g", 0.0) == 750);
+    CHECK(s["env"].get("ambient_C", 0.0) == 31);
+    CHECK(s["env"].get("humidity_rh", 0.0) == 70);
+    CHECK(s["env"].get("line_voltage", 0.0) == 110);
+    CHECK(s["env"].get("altitude_m", 0.0) == 1500);
+    CHECK(s.get("time_scale", 0.0) == 10);
+    CHECK(!s.getBool("paused", true));  // pausing is not a setting
+    CHECK(!s.getBool("power", true));   // nor is the power switch
+    const json::Value win = send(*h, R"({"cmd":"ui_settings","shell":"win32"})")["settings"];
+    CHECK(!win.getBool("sound", true));  // merged with the later window save, not replaced
+    CHECK(win.get("volume", 0.0) == 50);
+    CHECK(win["window"].get("y", 0.0) == 20);
+    CHECK(send(*h, R"({"cmd":"ui_settings","shell":"web"})")["settings"].get("volume", 0.0) == 25);
+    std::string text;
+    readTextFile(configPath, text);
+    const json::Value file = json::Value::parse(text);
+    CHECK(file.get("my_note", "") == "kept");  // the user's own keys stay
+    CHECK(file.get("parcels", 0.0) == 150);
+
+    // A batch that doesn't fit the roaster falls back to its default.
+    send(*h, R"({"cmd":"load","roaster":"popper_modded"})");
+    h->stop();
+    h.reset();
+    {
+        std::string t;
+        readTextFile(configPath, t);
+        json::Value v = json::Value::parse(t);
+        v["batch_g"] = 5000;
+        std::ofstream f(dir / "roastsim.json", std::ios::trunc);
+        f << v.dump(2);
+    }
+    h = makeHost();
+    CHECK(h->stateJson(false)["roaster"].get("id", "") == "popper_modded");
+    CHECK(h->stateJson(false).get("next_batch_g", 0.0) == h->roasterDef().batch.default_g);
+    CHECK(h->stateJson(false)["env"].get("line_voltage", 0.0) == 120);
+    CHECK(h->stateJson(false)["env"].get("ambient_C", 0.0) == 31);
+
+    // A file that doesn't parse is never overwritten.
+    {
+        std::ofstream f(dir / "roastsim.json", std::ios::trunc);
+        f << "{ broken";
+    }
+    send(*h, R"({"cmd":"time_scale","value":5})");
+    readTextFile(configPath, text);
+    CHECK(text == "{ broken");
+    h->stop();
+}
+
+TEST(c_api_uses_the_settings_file_by_default) {
+    namespace fs = std::filesystem;
+    const std::string defaultPath = platform::defaultConfigPath();
+    CHECK(fs::u8path(defaultPath).filename() == "roastsim.json");
+    CHECK(fs::u8path(platform::userConfigDir()).filename() == "RoastSim");
+
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / ("roastsim-capi-settings-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code error; fs::remove_all(path, error); }
+    } cleanup{dir};
+    // A settings folder that doesn't exist yet is created on the first save.
+    const std::string path = (dir / "nested" / "roastsim.json").u8string();
+    json::Value cfg = json::Value::object();
+    cfg["data_dir"] = rstest::dataDir();
+    cfg["http_enabled"] = false;
+    cfg["modbus_enabled"] = false;
+    cfg["config_path"] = path;
+    auto run = [&](const json::Value& c, auto&& body) {
+        char err[256] = {0};
+        rs_host* h = rs_host_create(c.dump().c_str(), err, sizeof err);
+        CHECK(h != nullptr);
+        if (!h) return;
+        CHECK(rs_host_start(h, err, sizeof err) == 1);
+        auto command = [&](const char* text) {
+            char out[1 << 15];
+            rs_host_command(h, text, "test", out, sizeof out);
+            return json::Value::parse(out);
+        };
+        body(command);
+        rs_host_destroy(h);
+    };
+    run(cfg, [&](auto& command) {
+        CHECK(command(R"({"cmd":"server"})").get("config_path", "") == path);
+        CHECK(command(R"({"cmd":"load","roaster":"stir_pan","bean":"brazil_natural"})").getBool("ok", false));
+        CHECK(command(R"({"cmd":"env","ambient_C":28})").getBool("ok", false));
+        CHECK(command(R"({"cmd":"time_scale","value":30})").getBool("ok", false));
+    });
+    CHECK(fs::is_regular_file(fs::u8path(path), ec));
+    json::Value again = cfg;
+    again["time_scale"] = 2;  // the caller's keys win over the file for this run
+    run(again, [&](auto& command) {
+        const json::Value s = command(R"({"cmd":"state"})");
+        CHECK(s["roaster"].get("id", "") == "stir_pan");
+        CHECK(s["bean"].get("id", "") == "brazil_natural");
+        CHECK(s["env"].get("ambient_C", 0.0) == 28);
+        CHECK(s.get("time_scale", 0.0) == 2);
+        CHECK(!command(R"({"cmd":"server"})").has("config_error"));
+    });
+    {
+        std::ofstream f(fs::u8path(path), std::ios::trunc);
+        f << "[1, 2";
+    }
+    run(cfg, [&](auto& command) {
+        const json::Value info = command(R"({"cmd":"server"})");
+        CHECK(info.get("config_error", "").find("roastsim.json") != std::string::npos);
+        CHECK(command(R"({"cmd":"state"})")["roaster"].get("id", "") == "popper_modded");  // defaults
+    });
+    std::string text;
+    readTextFile(path, text);
+    CHECK(text == "[1, 2");
+    // "config_path": "" neither reads nor saves a file.
+    json::Value none = cfg;
+    none["config_path"] = "";
+    run(none, [&](auto& command) {
+        CHECK(command(R"({"cmd":"server"})").get("config_path", "x").empty());
+        CHECK(!command(R"({"cmd":"ui_settings","shell":"t","settings":{"a":1}})").getBool("saved", true));
+    });
+}
+
 TEST(preset_creator_and_editor_persist) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -678,7 +850,7 @@ TEST(preset_creator_and_editor_persist) {
 TEST(c_api) {
     char err[256] = {0};
     std::string cfg = "{\"data_dir\":\"" + rstest::dataDir() + "\",\"http_enabled\":false,\"modbus_enabled\":false,"
-                      "\"roaster\":\"stir_pan\",\"seed\":3}";
+                      "\"roaster\":\"stir_pan\",\"seed\":3,\"config_path\":\"\"}";
     rs_host* h = rs_host_create(cfg.c_str(), err, sizeof err);
     CHECK(h != nullptr);
     if (!h) return;

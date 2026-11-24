@@ -293,24 +293,39 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         v["ok"] = true;
         return v;
     }
+    // Settings changed below are saved to roastsim.json (after the sim lock is
+    // released) so the next start picks up where this one left off.
     if (c == "load") {
         std::string rid = cmd.get("roaster", "");
         std::string bid = cmd.get("bean", "");
-        std::lock_guard<std::mutex> lk(mu_);
-        const RoasterDef* r = rid.empty() ? catalog_.roaster(sim_.roaster().id) : catalog_.roaster(rid);
-        const BeanSpec* b = bid.empty() ? catalog_.bean(sim_.bean().id) : catalog_.bean(bid);
-        if (!r) return fail("unknown roaster '" + rid + "'");
-        if (!b) return fail("unknown bean '" + bid + "'");
-        sim_.load(*r, *b);
-        ++roasterRevision_;
-        batchG_ = r->batch.default_g;
+        json::Value saved = json::Value::object();
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            const RoasterDef* r = rid.empty() ? catalog_.roaster(sim_.roaster().id) : catalog_.roaster(rid);
+            const BeanSpec* b = bid.empty() ? catalog_.bean(sim_.bean().id) : catalog_.bean(bid);
+            if (!r) return fail("unknown roaster '" + rid + "'");
+            if (!b) return fail("unknown bean '" + bid + "'");
+            sim_.load(*r, *b);
+            ++roasterRevision_;
+            batchG_ = r->batch.default_g;
+            saved["roaster"] = r->id;
+            saved["bean"] = b->id;
+            saved["batch_g"] = batchG_;
+            saved["env"] = envJson(sim_.environment());  // loading sets the roaster's mains voltage
+        }
+        saveSettings(saved);
         return ok();
     }
     if (c == "bean") {
-        std::lock_guard<std::mutex> lk(mu_);
-        const BeanSpec* b = catalog_.bean(cmd.get("id", cmd.get("bean", "").c_str()));
-        if (!b) return fail("unknown bean");
-        sim_.setBean(*b);
+        json::Value saved = json::Value::object();
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            const BeanSpec* b = catalog_.bean(cmd.get("id", cmd.get("bean", "").c_str()));
+            if (!b) return fail("unknown bean");
+            sim_.setBean(*b);
+            saved["bean"] = b->id;
+        }
+        saveSettings(saved);
         return ok();
     }
     if (c == "set") {
@@ -331,18 +346,31 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         return ok();
     }
     if (c == "batch") {
-        std::lock_guard<std::mutex> lk(mu_);
-        double g = cmd.get("batch_g", cmd.get("value", batchG_));
-        if (!(g > 0)) return fail("batch must be > 0");
-        batchG_ = g;
+        double g = 0;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            g = cmd.get("batch_g", cmd.get("value", batchG_));
+            if (!(g > 0)) return fail("batch must be > 0");
+            batchG_ = g;
+        }
+        json::Value saved = json::Value::object();
+        saved["batch_g"] = g;
+        saveSettings(saved);
         return ok();
     }
     if (c == "charge") {
-        std::lock_guard<std::mutex> lk(mu_);
-        double g = cmd.get("batch_g", batchG_);
-        std::string err;
-        if (!sim_.charge(g, origin, &err)) return fail(err);
-        batchG_ = g;
+        double g = 0;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            g = cmd.get("batch_g", batchG_);
+            std::string err;
+            if (!sim_.charge(g, origin, &err)) return fail(err);
+            if (g == batchG_) return ok();
+            batchG_ = g;
+        }
+        json::Value saved = json::Value::object();
+        saved["batch_g"] = g;
+        saveSettings(saved);
         return ok();
     }
     if (c == "drop") {
@@ -390,20 +418,53 @@ json::Value Host::command(const json::Value& cmd, const std::string& origin) {
         return ok();
     }
     if (c == "env") {
-        std::lock_guard<std::mutex> lk(mu_);
-        Environment e = sim_.environment();
-        applyEnvironmentJson(cmd, e);
-        sim_.setEnvironment(e);
         json::Value v = ok();
-        v["env"] = envJson(e);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            Environment e = sim_.environment();
+            applyEnvironmentJson(cmd, e);
+            sim_.setEnvironment(e);
+            v["env"] = envJson(e);
+        }
+        json::Value saved = json::Value::object();
+        saved["env"] = v["env"];
+        saveSettings(saved);
         return v;
     }
     if (c == "time_scale") {
         double s = cmd.get("value", 1.0);
         if (!(s > 0 && s <= 120)) return fail("time scale must be in (0, 120]");
-        std::lock_guard<std::mutex> lk(mu_);
-        timeScale_ = s;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            timeScale_ = s;
+        }
+        json::Value saved = json::Value::object();
+        saved["time_scale"] = s;
+        saveSettings(saved);
         return ok();
+    }
+    if (c == "ui_settings") {
+        // {"cmd":"ui_settings","shell":"win32","settings":{...}}: a front end's own
+        // settings (sound, window placement...), kept under "ui"."<shell>" in
+        // roastsim.json and merged key by key. Without "settings" it just reads them.
+        const std::string shell = cmd.get("shell", "");
+        if (shell.empty()) return fail("missing \"shell\"");
+        const json::Value& add = cmd["settings"];
+        json::Value v = ok();
+        if (add.isObject()) {
+            json::Value ui = json::Value::object(), saved = json::Value::object();
+            ui[shell] = add;
+            saved["ui"] = ui;
+            v["saved"] = saveSettings(saved);
+        }
+        std::string text, perr;
+        json::Value mine = json::Value::object();
+        if (!cfg_.config_path.empty() && readTextFile(cfg_.config_path, text) && !text.empty()) {
+            const json::Value file = json::Value::parse(text, &perr);
+            if (perr.empty() && file["ui"][shell].isObject()) mine = file["ui"][shell];
+        }
+        v["settings"] = mine;
+        return v;
     }
     if (c == "pause") {
         std::lock_guard<std::mutex> lk(mu_);

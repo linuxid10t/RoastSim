@@ -61,6 +61,8 @@ struct HostConfig {
     int tc4_baud = 115200;
     std::string roaster = "popper_modded";
     std::string bean = "colombia_washed";
+    double batch_g = 0;          // batch for the next charge; 0 (or out of the roaster's range) = its default
+    json::Value env;             // starting environment (ambient_C, humidity_rh, ...); keys left out keep the defaults
     double time_scale = 1.0;
     bool lock_realtime_with_logger = true;  // force 1x while Artisan is connected
     std::uint64_t seed = 0;      // 0 = random per run
@@ -70,11 +72,20 @@ struct HostConfig {
     char units = 'C';            // temperature: C or F
     std::string weight_units = "g";   // g | kg | oz | lb
     std::string altitude_units = "m"; // m | ft
-    std::string config_path;     // where unit changes are saved (roastsim.json); "" = don't save
+    // Where settings changed at run time (units, roaster, bean, batch, environment,
+    // speed, front-end "ui" settings) are saved (roastsim.json); "" = don't save.
+    // Front ends get the right file without setting it: rs_host_create() and
+    // roastsimd use platform::defaultConfigPath() unless told otherwise.
+    std::string config_path;
+    std::string config_error;    // set by fromFile when the file doesn't parse (not saved)
     double logger_timeout_s = 5.0;
     ArtisanWsConfig ws;
 
     static HostConfig fromJson(const json::Value& v, const HostConfig& base);
+    // Lays the settings file at `path` over `base` and sets config_path to it.
+    // A missing file is fine (it is created on the first save). One that doesn't
+    // parse is skipped and reported in config_error, and is never overwritten.
+    static HostConfig fromFile(const std::string& path, const HostConfig& base);
     json::Value toJson() const;
 };
 
@@ -122,6 +133,10 @@ public:
     // Returns false with a message for an unknown unit.
     bool changeUnits(char temp, const std::string& weight, const std::string& altitude, bool save, std::string* err,
                      bool* saved = nullptr);
+    // Merges `patch` into the file at config_path, keeping every other key already
+    // there (objects merge key by key). Returns false when there is no config_path or the file
+    // could not be written.
+    bool saveSettings(const json::Value& patch);
 
     void noteLoggerActivity(const std::string& who);
     bool loggerConnected() const;
@@ -153,6 +168,7 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<bool> running_{false};
 
+    std::mutex configMu_;         // serializes writes to config_path
     std::atomic<char> tempUnit_{'C'};
     mutable std::mutex unitsMu_;
     std::string weightUnit_ = "g", altitudeUnit_ = "m";

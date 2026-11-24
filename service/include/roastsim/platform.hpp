@@ -2,7 +2,8 @@
 // project lives behind this header (plus the native UI shells):
 //   platform_net.cpp     Winsock (Windows) / BSD sockets (Linux, Haiku, macOS)
 //   platform_serial.cpp  Win32 COM ports / POSIX termios + pseudo-terminals
-//   platform_paths.cpp   executable location (Win32, /proc, Haiku image info)
+//   platform_paths.cpp   executable location (Win32, /proc, Haiku image info),
+//                        per-user preset and settings folders
 #pragma once
 
 #include <cstddef>
@@ -89,6 +90,15 @@ std::string executableDir();
 // directory, or a few levels up (for running from a build tree).
 std::string findResourceDir(const std::string& name);
 std::string userPresetDir();
+// The user's RoastSim settings folder: %LOCALAPPDATA%\RoastSim (Windows),
+// $XDG_CONFIG_HOME/RoastSim or ~/.config/RoastSim (Linux and other POSIX),
+// ~/config/settings/RoastSim (Haiku), ~/Library/Application Support/RoastSim
+// (macOS). Falls back to the executable's folder when there is no home.
+std::string userConfigDir();
+// The settings file every front end uses unless told otherwise: roastsim.json
+// next to the executable if one is there (a portable install), else
+// roastsim.json in userConfigDir(). The file need not exist yet.
+std::string defaultConfigPath();
 // Atomically save a preset. A null previous value means create a new file.
 bool writePreset(const std::string& path, const std::string& contents, const std::string* previous, std::string* err);
 

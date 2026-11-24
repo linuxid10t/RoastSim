@@ -31,7 +31,8 @@ void usage() {
     std::printf(
         "roastsimd - virtual coffee roaster for Artisan and friends\n\n"
         "usage: roastsimd [options]\n"
-        "  --config FILE        JSON host config (see docs/API.md)\n"
+        "  --config FILE        JSON host config and saved settings (see docs/API.md); default:\n"
+        "                       roastsim.json next to the program, else in the user's settings folder\n"
         "  --roaster ID         roaster preset (see --list)\n"
         "  --bean ID            green coffee preset\n"
         "  --bind ADDR          listen address (default 127.0.0.1)\n"
@@ -367,18 +368,14 @@ int main(int argc, char** argv) {
     bool list = false, quiet = false, sound = false;
     bool mcp = false, mcpEmbedded = false;
     std::string mcpConnect;
-    // Like the Win32 app, read roastsim.json next to the program unless --config
-    // names another file; unit changes made at runtime are saved back to it.
+    // Like every front end, read the user's settings file (platform::defaultConfigPath())
+    // unless --config names another; settings changed at runtime (units, roaster,
+    // bean, batch, environment, speed) are saved back to it.
     bool explicitConfig = false;
     for (int i = 1; i < argc; ++i) explicitConfig |= std::string(argv[i]) == "--config";
-    cfg.config_path = platform::executableDir() + "/roastsim.json";
     if (!explicitConfig) {
-        std::string text, err;
-        if (readTextFile(cfg.config_path, text)) {
-            json::Value v = json::Value::parse(text, &err);
-            if (err.empty()) cfg = HostConfig::fromJson(v, cfg);
-            else std::fprintf(stderr, "warning: %s: %s (ignored)\n", cfg.config_path.c_str(), err.c_str());
-        }
+        cfg = HostConfig::fromFile(platform::defaultConfigPath(), cfg);
+        if (!cfg.config_error.empty()) std::fprintf(stderr, "warning: %s\n", cfg.config_error.c_str());
     }
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -395,7 +392,12 @@ int main(int argc, char** argv) {
         }
         else if (a == "--weight-units") cfg.weight_units = next();
         else if (a == "--altitude-units") cfg.altitude_units = next();
-        else if (a == "--roaster") cfg.roaster = next();
+        else if (a == "--roaster") {
+            // The saved batch and mains voltage belong to the saved roaster: use this one's.
+            cfg.roaster = next();
+            cfg.batch_g = 0;
+            cfg.env.erase("line_voltage");
+        }
         else if (a == "--bean") cfg.bean = next();
         else if (a == "--bind") cfg.bind_address = next();
         else if (a == "--lan") cfg.bind_address = "0.0.0.0";

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 
 #include "internal.hpp"
 #include "roastsim/platform.hpp"
@@ -27,6 +28,8 @@ HostConfig HostConfig::fromJson(const json::Value& v, const HostConfig& base) {
     c.tc4_baud = static_cast<int>(v.get("tc4_baud", static_cast<double>(c.tc4_baud)));
     c.roaster = v.get("roaster", c.roaster.c_str());
     c.bean = v.get("bean", c.bean.c_str());
+    c.batch_g = v.get("batch_g", c.batch_g);
+    if (v["env"].isObject()) c.env = v["env"];
     c.time_scale = v.get("time_scale", c.time_scale);
     c.lock_realtime_with_logger = v.getBool("lock_realtime_with_logger", c.lock_realtime_with_logger);
     c.seed = static_cast<std::uint64_t>(v.get("seed", static_cast<double>(c.seed)));
@@ -50,6 +53,22 @@ HostConfig HostConfig::fromJson(const json::Value& v, const HostConfig& base) {
     return c;
 }
 
+HostConfig HostConfig::fromFile(const std::string& path, const HostConfig& base) {
+    HostConfig c = base;
+    c.config_path = path;
+    std::string text, err;
+    if (!readTextFile(path, text) || text.empty()) return c;
+    json::Value v = json::Value::parse(text, &err);
+    if (err.empty() && !v.isObject()) err = "not a JSON object";
+    if (!err.empty()) {
+        c.config_error = path + ": " + err + " (ignored; fix or delete it to save settings again)";
+        return c;
+    }
+    c = fromJson(v, c);
+    c.config_path = path;  // the file can't move itself elsewhere
+    return c;
+}
+
 json::Value HostConfig::toJson() const {
     json::Value v = json::Value::object();
     v["data_dir"] = data_dir;
@@ -64,6 +83,8 @@ json::Value HostConfig::toJson() const {
     v["tc4_baud"] = tc4_baud;
     v["roaster"] = roaster;
     v["bean"] = bean;
+    v["batch_g"] = batch_g;
+    if (env.isObject()) v["env"] = env;
     v["time_scale"] = time_scale;
     v["lock_realtime_with_logger"] = lock_realtime_with_logger;
     v["seed"] = static_cast<double>(seed);
@@ -111,6 +132,7 @@ bool Host::start(std::string* err) {
         return false;
     }
     for (const auto& e : catalog_.errors()) messages_.push_back("warning: " + e);
+    if (!cfg_.config_error.empty()) messages_.push_back("warning: " + cfg_.config_error);
     loadUserPresets();
 
     const RoasterDef* r = catalog_.roaster(cfg_.roaster);
@@ -128,8 +150,14 @@ bool Host::start(std::string* err) {
         sim_.setSeed(seed);
         sim_.setParcelCount(cfg_.parcels);
         sim_.load(*r, *b);
+        if (cfg_.env.isObject()) {  // the environment saved last time (or set in roastsim.json)
+            Environment e = sim_.environment();
+            applyEnvironmentJson(cfg_.env, e);
+            sim_.setEnvironment(e);
+        }
         ++roasterRevision_;
-        batchG_ = r->batch.default_g;
+        const bool batchFits = cfg_.batch_g >= r->batch.min_g && cfg_.batch_g <= r->batch.max_g;
+        batchG_ = batchFits ? cfg_.batch_g : r->batch.default_g;
     }
 
     stop_ = false;
@@ -299,25 +327,56 @@ bool Host::changeUnits(char temp, const std::string& weight, const std::string& 
         if (!a.empty()) altitudeUnit_ = a;
     }
     if (saved) *saved = false;
-    if (save && !cfg_.config_path.empty()) {
-        // Update only the unit keys, keeping everything else the user put in the file.
-        std::string text, perr;
-        json::Value file = json::Value::object();
-        if (readTextFile(cfg_.config_path, text)) {
-            json::Value parsed = json::Value::parse(text, &perr);
-            if (perr.empty() && parsed.isObject()) file = parsed;
-        }
-        json::Value u = unitsJson();
-        file["units"] = u["temperature"];
-        file["weight_units"] = u["weight"];
-        file["altitude_units"] = u["altitude"];
-        std::ofstream f(std::filesystem::u8path(cfg_.config_path), std::ios::binary | std::ios::trunc);
-        if (f) {
-            f << file.dump(2) << "\n";
-            if (saved) *saved = static_cast<bool>(f);
-        }
+    if (save) {
+        json::Value u = unitsJson(), patch = json::Value::object();
+        patch["units"] = u["temperature"];
+        patch["weight_units"] = u["weight"];
+        patch["altitude_units"] = u["altitude"];
+        const bool ok = saveSettings(patch);
+        if (saved) *saved = ok;
     }
     return true;
+}
+
+bool Host::saveSettings(const json::Value& patch) {
+    if (cfg_.config_path.empty() || !patch.isObject()) return false;
+    std::lock_guard<std::mutex> lk(configMu_);
+    // Update only the given keys, keeping everything else the user put in the file.
+    // A file that doesn't parse is left alone rather than replaced.
+    std::string text, perr;
+    json::Value file = json::Value::object();
+    if (readTextFile(cfg_.config_path, text) && !text.empty()) {
+        json::Value parsed = json::Value::parse(text, &perr);
+        if (!perr.empty() || !parsed.isObject()) return false;
+        file = parsed;
+    }
+    // Objects merge key by key ("ui" holds every front end's block), anything else is replaced.
+    std::function<void(json::Value&, const json::Value&)> merge = [&](json::Value& into, const json::Value& from) {
+        for (const auto& k : from.keys()) {
+            if (from[k].isObject() && into[k].isObject()) merge(into[k], from[k]);
+            else into[k] = from[k];
+        }
+    };
+    merge(file, patch);
+    namespace fs = std::filesystem;
+    const fs::path target = fs::u8path(cfg_.config_path);
+    fs::path temp = target;
+    temp += ".tmp";
+    std::error_code ec;
+    if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);  // first save in a new settings folder
+    {
+        std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+        f << file.dump(2) << "\n";
+        f.close();
+        if (!f) {
+            fs::remove(temp, ec);
+            return false;
+        }
+    }
+    fs::rename(temp, target, ec);  // replace in one step, so a crash never leaves half a file
+    if (!ec) return true;
+    fs::remove(temp, ec);
+    return false;
 }
 
 double Host::fromLoggerUnits(double t) const { return units() == 'F' ? (t - 32.0) * 5.0 / 9.0 : t; }
@@ -362,6 +421,9 @@ json::Value Host::serverInfo() const {
     v["messages"] = msgs;
     v["data_dir"] = cfg_.data_dir;
     v["web_dir"] = cfg_.web_dir;
+    v["presets_dir"] = cfg_.presets_dir;
+    v["config_path"] = cfg_.config_path;  // "" when settings aren't saved
+    if (!cfg_.config_error.empty()) v["config_error"] = cfg_.config_error;
     return v;
 }
 

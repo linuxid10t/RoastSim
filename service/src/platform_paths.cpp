@@ -131,6 +131,37 @@ std::string userPresetDir() {
     return (base / "RoastSim" / "presets").u8string();
 }
 
+std::string userConfigDir() {
+    fs::path base;
+#if defined(_WIN32)
+    if (const wchar_t* dir = _wgetenv(L"LOCALAPPDATA"); dir && *dir) base = dir;
+#else
+    const char* userHome = std::getenv("HOME");
+    if (userHome && *userHome) {
+#if defined(__HAIKU__)
+        base = fs::u8path(userHome) / "config/settings";
+#elif defined(__APPLE__)
+        base = fs::u8path(userHome) / "Library/Application Support";
+#else
+        base = fs::u8path(userHome) / ".config";
+#endif
+    }
+#if !defined(__HAIKU__) && !defined(__APPLE__)
+    if (const char* dir = std::getenv("XDG_CONFIG_HOME"); dir && *dir && fs::u8path(dir).is_absolute())
+        base = fs::u8path(dir);
+#endif
+#endif
+    if (base.empty()) return executableDir();
+    return (base / "RoastSim").u8string();
+}
+
+std::string defaultConfigPath() {
+    std::error_code ec;
+    const fs::path portable = fs::u8path(executableDir()) / "roastsim.json";
+    if (fs::is_regular_file(portable, ec)) return portable.u8string();
+    return (fs::u8path(userConfigDir()) / "roastsim.json").u8string();
+}
+
 bool writePreset(const std::string& path, const std::string& contents, const std::string* previous, std::string* err) {
     auto fail = [&](const char* reason) { if (err) *err = reason; return false; };
     const fs::path target = fs::u8path(path), folder = target.parent_path();

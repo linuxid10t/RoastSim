@@ -28,16 +28,22 @@ extern "C" {
 int rs_api_version(void) { return RS_API_VERSION; }
 
 rs_host* rs_host_create(const char* config_json, char* err, size_t errlen) {
-    HostConfig cfg;
+    json::Value v = json::Value::object();
     if (config_json && *config_json) {
         std::string perr;
-        json::Value v = json::Value::parse(config_json, &perr);
+        v = json::Value::parse(config_json, &perr);
         if (!perr.empty()) {
             copyStr("config JSON: " + perr, err, errlen);
             return nullptr;
         }
-        cfg = HostConfig::fromJson(v, cfg);
     }
+    // Every shell gets the same saved settings: the settings file first, then
+    // the caller's keys on top. "config_path": "" turns the file off.
+    HostConfig cfg;
+    const std::string path = v.has("config_path") ? v.get("config_path", "") : platform::defaultConfigPath();
+    if (!path.empty()) cfg = HostConfig::fromFile(path, cfg);
+    cfg = HostConfig::fromJson(v, cfg);
+    cfg.config_path = path;
     auto* h = new rs_host;
     h->host = std::make_unique<Host>(cfg);
     return h;

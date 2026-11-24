@@ -83,6 +83,11 @@ function connect() {
     eventSeq = 0;
     renderEvents();
     if (!await loadLists()) return;
+    const ui = await send({ cmd: 'ui_settings', shell: 'web' });  // volume saved by the simulator
+    if (ui.ok && VOLUMES.includes(ui.settings.volume)) {
+      volume = ui.settings.volume;
+      if (snd) snd.gain.gain.value = volume / 100;
+    }
     const s0 = await refreshDef();
     if (!s0 || ws !== socket) return;
     liveFrom = s0.event_seq || 0;
@@ -709,7 +714,11 @@ for (const [i, v] of SPEEDS.entries()) {
 }
 for (const v of VOLUMES) {
   const b = document.createElement('button'); b.className = 'radio'; b.dataset.volume = v; b.textContent = v + '%';
-  b.onclick = () => { volume = v; if (snd) snd.gain.gain.value = v / 100; };
+  b.onclick = () => {
+    volume = v;
+    if (snd) snd.gain.gain.value = v / 100;
+    send({ cmd: 'ui_settings', shell: 'web', settings: { volume: v } });
+  };
   $('volumes').appendChild(b);
 }
 

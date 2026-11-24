@@ -123,7 +123,13 @@ RS_API int rs_api_version(void);
 
 /* config_json: NULL or a JSON object (see HostConfig / docs/API.md), e.g.
  *   {"roaster":"popper_modded","modbus_port":502,"http_port":8080,"bind_address":"127.0.0.1"}
- * On failure returns NULL and writes a message into err. */
+ * The host first reads the user's settings file (roastsim.json next to the
+ * program if there is one, else in the per-user settings folder) and saves
+ * settings changed at run time back to it, so a shell can simply pass NULL.
+ * Keys in config_json override the file for this run. "config_path" names
+ * another file, or "" to neither read nor save one. The `server` command
+ * reports the file in use as "config_path", and "config_error" if it could
+ * not be read. On failure returns NULL and writes a message into err. */
 RS_API rs_host* rs_host_create(const char* config_json, char* err, size_t errlen);
 RS_API int rs_host_start(rs_host* h, char* err, size_t errlen);  /* 1 ok, 0 fail */
 RS_API void rs_host_stop(rs_host* h);
